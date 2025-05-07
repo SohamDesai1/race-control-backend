@@ -1,8 +1,10 @@
 use axum::{extract::State, response::IntoResponse, routing::get, serve, Json, Router};
+use dotenv::dotenv;
 use http::StatusCode;
 use postgrest::Postgrest;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::env;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -13,15 +15,20 @@ struct AppState {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct User {
-    id: Option<i32>, // Supabase can auto-generate ID
+    id: Option<i32>,
     name: String,
 }
 
 #[tokio::main]
 async fn main() {
-    let client = Postgrest::new("https://[project].supabase.co/rest/v1/")
-        .insert_header("apikey", "header_value")
-        .insert_header("Authorization", "Bearer token");
+    dotenv().ok();
+    let url = env::var("SUPABASE_PROJECT_URL").unwrap();
+    let api_key = env::var("SUPABASE_ANNON_KEY").unwrap();
+    let jwt_token = env::var("SUPABASE_JWT_TOKEN").unwrap();
+
+    let client = Postgrest::new(&format!("{}/rest/v1", url))
+        .insert_header("apikey", &api_key)
+        .insert_header("Authorization", &format!("Bearer {}", jwt_token));
 
     let state = AppState {
         supabase: Arc::new(client),
@@ -46,7 +53,7 @@ async fn root() -> Json<Value> {
 }
 
 async fn get_users(State(state): State<AppState>) -> impl IntoResponse {
-    let response = state.supabase.from("users").select("*").execute().await;
+    let response = state.supabase.from("Users").select("*").execute().await;
 
     match response {
         Ok(resp) => {
