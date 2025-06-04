@@ -1,14 +1,13 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct User {
-    pub name: String,
-
+    pub email: String,
     //option for none serde
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub username: Option<String>,
+    pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub email: Option<String>,
+    pub username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dob: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
