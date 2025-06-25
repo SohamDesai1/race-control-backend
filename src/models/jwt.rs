@@ -4,6 +4,5 @@ use serde::{Deserialize, Serialize};
 pub struct Claims {
     pub sub: String,
     pub iat: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exp: Option<usize>,
+    pub exp: usize,
 }
