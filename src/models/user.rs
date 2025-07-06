@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct User {
     pub email: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at : Option<String>,
+    pub created_at: Option<String>,
     //option for none serde
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -18,4 +18,6 @@ pub struct User {
     pub password: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_profile_complete: Option<bool>,
 }

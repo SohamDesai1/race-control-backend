@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Bind to a TCP listener
     let app = make_app().await?;
-    let listener = TcpListener::bind("127.0.0.1:3000").await?;
+    let listener = TcpListener::bind("0.0.0.0:3000").await?;
     println!("Listening on http://127.0.0.1:3000");
     serve(listener, app).await?;
     Ok(())

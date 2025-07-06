@@ -18,3 +18,4 @@ chrono = "0.4.41"
 async-trait = "0.1.88"
 axum-extra = { version = "0.10.1", features = ["typed-header"] }
 headers = "0.4.0"
+supabase-auth = "0.10.13"

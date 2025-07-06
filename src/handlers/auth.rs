@@ -2,7 +2,6 @@ use crate::{
     models::user::User,
     utils::{hash_password::hash_password, jwt_encode::jwt_encode, state::AppState},
 };
-use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{extract::State, response::IntoResponse, Json};
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
@@ -29,27 +28,43 @@ pub async fn register(
                 "hashed_password": hashed,
                 "auth_provider": "email"
             });
-
-            let response = state
-                .supabase
-                .from("Users")
-                .insert(body.to_string())
-                .execute()
+            let session = state
+                .supabase_auth
+                .sign_up_with_email_and_password(
+                    &payload.email.clone(),
+                    &payload.password.unwrap(),
+                    None,
+                )
                 .await;
+            match session {
+                Ok(_) => {
+                    let response = state
+                        .supabase
+                        .from("Users")
+                        .insert(body.to_string())
+                        .execute()
+                        .await;
 
-            match response {
-                Ok(resp) => {
-                    let body = resp.text().await.unwrap();
-                    let json_body: Value = from_str(&body).unwrap();
-                    (
-                        StatusCode::CREATED,
-                        Json(json!({"message": "User registered", "data": json_body})),
-                    )
-                        .into_response()
+                    match response {
+                        Ok(resp) => {
+                            let body = resp.text().await.unwrap();
+                            let json_body: Value = from_str(&body).unwrap();
+                            (
+                                StatusCode::CREATED,
+                                Json(json!({"message": "User registered", "data": json_body})),
+                            )
+                                .into_response()
+                        }
+                        Err(_) => (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({"error": "Registration failed"})),
+                        )
+                            .into_response(),
+                    }
                 }
-                Err(_) => (
+                Err(e) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "Registration failed"})),
+                    Json(json!({"error": e.to_string()})),
                 )
                     .into_response(),
             }
@@ -61,39 +76,50 @@ pub async fn register(
 pub async fn login(State(state): State<AppState>, Json(payload): Json<User>) -> impl IntoResponse {
     let email = payload.email.clone();
     let password = payload.password.unwrap_or_default();
-
-    let response = state
-        .supabase
-        .from("Users")
-        .eq("email", email)
-        .select("*")
-        .execute()
+    let session = state
+        .supabase_auth
+        .login_with_email(&email, &password)
         .await;
+    match session {
+        Ok(user) => {
+            let response = state
+                .supabase
+                .from("Users")
+                .eq("email", email)
+                .select("*")
+                .execute()
+                .await;
 
-    match response {
-        Ok(resp) => {
-            let body = resp.text().await.unwrap();
-            let json_body: Value = from_str(&body).unwrap();
-            let stored_hash = json_body[0]["hashed_password"].as_str().unwrap_or("");
-            let parsed_hash = PasswordHash::new(stored_hash).unwrap();
-            let argon2 = Argon2::default();
+            match response {
+                Ok(resp) => {
+                    let body = resp.text().await.unwrap();
+                    let json_body: Value = from_str(&body).unwrap();
+                    // let stored_hash = json_body[0]["hashed_password"].as_str().unwrap_or("");
+                    // let parsed_hash = PasswordHash::new(stored_hash).unwrap();
+                    // let argon2 = Argon2::default();
 
-            if argon2
-                .verify_password(password.as_bytes(), &parsed_hash)
-                .is_ok()
-            {
-                let token = jwt_encode(payload.email, None, state.config.jwt_secret.as_ref());
-                (
+                    // if argon2
+                    //     .verify_password(password.as_bytes(), &parsed_hash)
+                    //     .is_ok()
+                    // {
+                    (
                     StatusCode::OK,
-                    Json(json!({"message": "Login successful", "data": {"user":json_body,"token": token}})),
+                    Json(json!({"message": "Login successful", "data": {"user":json_body,"token": user.access_token}})),
                 )
                     .into_response()
-            } else {
-                (
-                    StatusCode::UNAUTHORIZED,
-                    Json(json!({"error": "Invalid credentials"})),
+                    // } else {
+                    //     (
+                    //         StatusCode::UNAUTHORIZED,
+                    //         Json(json!({"error": "Invalid credentials"})),
+                    //     )
+                    //         .into_response()
+                    // }
+                }
+                Err(_) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "User lookup failed"})),
                 )
-                    .into_response()
+                    .into_response(),
             }
         }
         Err(_) => (
