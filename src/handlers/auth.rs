@@ -37,7 +37,7 @@ pub async fn register(
                 )
                 .await;
             match session {
-                Ok(_) => {
+                Ok(user) => {
                     let response = state
                         .supabase
                         .from("Users")
@@ -49,15 +49,32 @@ pub async fn register(
                         Ok(resp) => {
                             let body = resp.text().await.unwrap();
                             let json_body: Value = from_str(&body).unwrap();
-                            (
-                                StatusCode::CREATED,
-                                Json(json!({"message": "User registered", "data": json_body})),
-                            )
-                                .into_response()
+
+                            match user {
+                                supabase_auth::models::EmailSignUpResult::SessionResult(
+                                    session,
+                                ) => (
+                                    StatusCode::CREATED,
+                                    Json(json!({
+                                        "message": "User registered",
+                                        "data": {
+                                            "access_token": session.access_token,
+                                            "user": json_body
+                                        }
+                                    })),
+                                ),
+                                supabase_auth::models::EmailSignUpResult::ConfirmationResult(
+                                    _,
+                                ) => (
+                                    StatusCode::CREATED,
+                                    Json(json!({"message": "User registered", "data": json_body})),
+                                ),
+                            }
+                            .into_response()
                         }
                         Err(_) => (
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(json!({"error": "Registration failed"})),
+                            Json(json!({"error": "Failed to insert user into database"})),
                         )
                             .into_response(),
                     }
@@ -69,7 +86,7 @@ pub async fn register(
                     .into_response(),
             }
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response(),
+        Err(e) => (StatusCode::CONFLICT, Json(json!({"error": e}))).into_response(),
     }
 }
 
