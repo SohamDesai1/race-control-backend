@@ -1,4 +1,5 @@
 pub mod users;
+pub mod race;
 use std::error::Error;
 
 use axum::{response::IntoResponse, routing::get, Json, Router};
@@ -10,7 +11,7 @@ pub use users::user_routes;
 pub mod auth;
 pub use auth::auth_routes;
 
-use crate::utils::{config::Config, state::AppState};
+use crate::{routes::race::race_routes, utils::{config::Config, state::AppState}};
 
 pub async fn make_app() -> Result<Router, Box<dyn Error>> {
     let config = Config::init();
@@ -35,6 +36,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         .route("/", get(health_check))
         .nest("/auth", auth_routes())
         .nest("/users", user_routes(state.clone()))
+        .nest("/race", race_routes(state.clone()))
         .with_state(state);
     Ok(app)
 }
