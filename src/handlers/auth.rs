@@ -1,6 +1,6 @@
 use crate::{
     models::user::User,
-    utils::{hash_password::hash_password, jwt_encode::jwt_encode, state::AppState},
+    utils::{hash_password::hash_password, state::AppState},
 };
 use axum::{extract::State, response::IntoResponse, Json};
 use http::StatusCode;
@@ -185,11 +185,11 @@ pub async fn google_auth(
                     Ok(ins_resp) => {
                         let ins_body = ins_resp.text().await.unwrap();
                         let ins_json: Value = from_str(&ins_body).unwrap();
-                        let token =
-                            jwt_encode(payload.email, None, state.config.jwt_secret.as_ref());
+                        // let token =
+                        //     jwt_encode(payload.email, None, state.config.jwt_secret.as_ref());
                         (
                             StatusCode::CREATED,
-                            Json(json!({"message": "User created", "data": {"user":ins_json, "token": token}})),
+                            Json(json!({"message": "User created", "data": {"user":ins_json, "token": "token"}})),
                         )
                             .into_response()
                     }

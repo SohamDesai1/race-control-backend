@@ -5,16 +5,15 @@ use axum::{
 };
 use http::{header, StatusCode};
 use jsonwebtoken::{decode, DecodingKey, Validation};
-use serde_json::Value;
 use std::sync::Arc;
 
 use crate::{
-    models::{error::Error, jwt::Claims, user::User},
+    models::{error::Error, jwt::Claims},
     utils::state::AppState,
 };
 
 pub async fn auth_middleware(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>, // No longer used
     mut req: Request,
     next: Next,
 ) -> Result<impl IntoResponse, Error> {
@@ -25,48 +24,18 @@ pub async fn auth_middleware(
         .and_then(|h| h.strip_prefix("Bearer "))
         .ok_or((StatusCode::UNAUTHORIZED, "Missing Bearer token"))?;
 
-    let secret = std::env::var("JWT_SECRET")
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "JWT_SECRET not set"))?;
+    let secret = state.config.jwt_secret.clone();
+
+    let mut validation = Validation::new(jsonwebtoken::Algorithm::HS256);
+    validation.set_audience(&["authenticated"]);
 
     let decoded = decode::<Claims>(
         token,
-        &DecodingKey::from_secret(secret.as_bytes()),
-        &Validation::default(),
+        &DecodingKey::from_secret(secret.as_ref()),
+        &validation,
     )?;
 
-    let email = decoded.claims.sub;
-
-    let response = state
-        .supabase
-        .from("Users")
-        .eq("email", &email)
-        .select("*")
-        .execute()
-        .await
-        .map_err(|e| Error::new(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
-
-    let body = response.text().await.map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to read Supabase response",
-        )
-    })?;
-
-    let users: Vec<Value> = serde_json::from_str(&body).map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Invalid JSON from Supabase",
-        )
-    })?;
-
-    if users.is_empty() {
-        return Err((StatusCode::UNAUTHORIZED, "No matching user").into());
-    }
-
-    let user: User = serde_json::from_value(users[0].clone())
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Cannot deserialize user"))?;
-
-    req.extensions_mut().insert(user);
+    req.extensions_mut().insert(decoded.claims);
 
     Ok(next.run(req).await)
 }
