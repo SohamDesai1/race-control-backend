@@ -1,5 +1,5 @@
-pub mod users;
 pub mod race;
+pub mod users;
 use std::error::Error;
 
 use axum::{response::IntoResponse, routing::get, Json, Router};
@@ -11,7 +11,10 @@ pub use users::user_routes;
 pub mod auth;
 pub use auth::auth_routes;
 
-use crate::{routes::race::race_routes, utils::{config::Config, state::AppState}};
+use crate::{
+    routes::race::race_routes,
+    utils::{config::Config, state::AppState},
+};
 
 pub async fn make_app() -> Result<Router, Box<dyn Error>> {
     let config = Config::init();
@@ -27,10 +30,12 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         &config.supabase_annon_key,
         &config.supabase_jwt_token,
     );
+    let http_client = reqwest::Client::new();
     let state = AppState {
         supabase,
         supabase_auth,
         config,
+        http_client,
     };
     let app = Router::new()
         .route("/", get(health_check))

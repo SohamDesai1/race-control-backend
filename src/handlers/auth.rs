@@ -121,7 +121,7 @@ pub async fn login(State(state): State<AppState>, Json(payload): Json<User>) -> 
                     // {
                     (
                     StatusCode::OK,
-                    Json(json!({"message": "Login successful", "data": {"user":json_body,"token": user.access_token}})),
+                    Json(json!({"message": "Login successful", "data": {"user":json_body,"acces_token": user.access_token,"refresh_token": user.refresh_token}})),
                 )
                     .into_response()
                     // } else {
@@ -210,6 +210,31 @@ pub async fn google_auth(
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": "User lookup failed"})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn refresh_token_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<User>,
+) -> impl IntoResponse {
+    let refresh_token = payload.refresh_token.unwrap_or_default();
+
+    let session = state
+        .supabase_auth
+        .exchange_token_for_session( &refresh_token)
+        .await;
+
+    match session {
+        Ok(user) => (
+            StatusCode::OK,
+            Json(json!({"message": "Token refreshed", "data": {"access_token": user.access_token, "refresh_token": user.refresh_token}})),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to refresh token"})),
         )
             .into_response(),
     }
