@@ -1,18 +1,18 @@
 pub mod race;
+pub mod session;
 pub mod users;
-use std::error::Error;
-
 use axum::{response::IntoResponse, routing::get, Json, Router};
 use http::StatusCode;
 use postgrest::Postgrest;
 use serde_json::json;
+use std::error::Error;
 use supabase_auth::models::AuthClient;
 pub use users::user_routes;
 pub mod auth;
 pub use auth::auth_routes;
 
 use crate::{
-    routes::race::race_routes,
+    routes::{race::race_routes, session::session_routes},
     utils::{config::Config, state::AppState},
 };
 
@@ -42,6 +42,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         .nest("/auth", auth_routes())
         .nest("/users", user_routes(state.clone()))
         .nest("/race", race_routes(state.clone()))
+        .nest("/session", session_routes(state.clone()))
         .with_state(state);
     Ok(app)
 }
