@@ -1,6 +1,7 @@
 pub mod race;
 pub mod session;
 pub mod users;
+pub mod standings;
 use axum::{response::IntoResponse, routing::get, Json, Router};
 use http::StatusCode;
 use postgrest::Postgrest;
@@ -12,7 +13,7 @@ pub mod auth;
 pub use auth::auth_routes;
 
 use crate::{
-    routes::{race::race_routes, session::session_routes},
+    routes::{race::race_routes, session::session_routes, standings::standings_routes},
     utils::{config::Config, state::AppState},
 };
 
@@ -43,6 +44,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         .nest("/users", user_routes(state.clone()))
         .nest("/race", race_routes(state.clone()))
         .nest("/session", session_routes(state.clone()))
+        .nest("/standings", standings_routes(state.clone()))
         .with_state(state);
     Ok(app)
 }
