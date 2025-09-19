@@ -1,13 +1,18 @@
 pub mod race;
 pub mod session;
-pub mod users;
 pub mod standings;
+pub mod users;
 use axum::{response::IntoResponse, routing::get, Json, Router};
 use http::StatusCode;
 use postgrest::Postgrest;
 use serde_json::json;
 use std::error::Error;
 use supabase_auth::models::AuthClient;
+use tower_http::trace::TraceLayer;
+use tracing::{info, Level};
+use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, Registry};
+// use tracing::Level;
+// use tracing_subscriber::filter;
 pub use users::user_routes;
 pub mod auth;
 pub use auth::auth_routes;
@@ -18,7 +23,10 @@ use crate::{
 };
 
 pub async fn make_app() -> Result<Router, Box<dyn Error>> {
+    info!("Initializing application...");
     let config = Config::init();
+
+    info!("Configuration loaded successfully");
 
     let supabase = Postgrest::new(&format!("{}/rest/v1", &config.supabase_project_url))
         .insert_header("apikey", &config.supabase_annon_key)
@@ -31,13 +39,42 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         &config.supabase_annon_key,
         &config.supabase_jwt_token,
     );
+
     let http_client = reqwest::Client::new();
+    info!("External clients initialized successfully");
+
     let state = AppState {
         supabase,
         supabase_auth,
         config,
         http_client,
     };
+
+    let log_level = std::env::var("LOG_LEVEL")
+        .unwrap_or_else(|_| "info".to_string())
+        .to_lowercase();
+
+    let level = match log_level.as_str() {
+        "error" => Level::ERROR,
+        "warn" => Level::WARN,
+        "info" => Level::INFO,
+        "debug" => Level::DEBUG,
+        "trace" => Level::TRACE,
+        _ => Level::INFO,
+    };
+
+    let filter = filter::Targets::new()
+        .with_target("tower_http::trace::on_response", Level::TRACE)
+        .with_target("tower_http::trace::on_request", Level::TRACE)
+        .with_target("tower_http::trace::make_span", Level::DEBUG)
+        .with_target("axum::rejection", Level::TRACE)
+        .with_target(env!("CARGO_PKG_NAME"), level)
+        .with_default(Level::INFO);
+
+    let tracing_layer = tracing_subscriber::fmt::layer();
+
+    Registry::default().with(tracing_layer).with(filter).init();
+
     let app = Router::new()
         .route("/", get(health_check))
         .nest("/auth", auth_routes())
@@ -45,7 +82,10 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         .nest("/race", race_routes(state.clone()))
         .nest("/session", session_routes(state.clone()))
         .nest("/standings", standings_routes(state.clone()))
+        .layer(TraceLayer::new_for_http())
         .with_state(state);
+    info!("Application initialized successfully");
+
     Ok(app)
 }
 
