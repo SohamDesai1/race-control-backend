@@ -20,3 +20,12 @@ axum-extra = { version = "0.10.1", features = ["typed-header"] }
 headers = "0.4.0"
 supabase-auth = "0.10.13"
 reqwest = "0.12.22"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
+tower = "0.5.2"
+tower-http = { version = "0.6.6", features = [
+    "trace",
+    "timeout",
+    "compression-full",
+] }
+uuid = { version = "1.18.1", features = ["v4"] }
