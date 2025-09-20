@@ -2,7 +2,7 @@ pub mod race;
 pub mod session;
 pub mod standings;
 pub mod users;
-use axum::{response::IntoResponse, routing::get, Json, Router};
+use axum::{middleware::from_fn, response::IntoResponse, routing::get, Json, Router};
 use http::StatusCode;
 use postgrest::Postgrest;
 use serde_json::json;
@@ -11,13 +11,12 @@ use supabase_auth::models::AuthClient;
 use tower_http::trace::TraceLayer;
 use tracing::{info, Level};
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, Registry};
-// use tracing::Level;
-// use tracing_subscriber::filter;
 pub use users::user_routes;
 pub mod auth;
 pub use auth::auth_routes;
 
 use crate::{
+    handlers::{middleware::auth_middleware, weather::get_weather},
     routes::{race::race_routes, session::session_routes, standings::standings_routes},
     utils::{config::Config, state::AppState},
 };
@@ -75,6 +74,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
 
     Registry::default().with(tracing_layer).with(filter).init();
 
+    let value = state.clone();
     let app = Router::new()
         .route("/", get(health_check))
         .nest("/auth", auth_routes())
@@ -82,6 +82,16 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         .nest("/race", race_routes(state.clone()))
         .nest("/session", session_routes(state.clone()))
         .nest("/standings", standings_routes(state.clone()))
+        .route(
+            "/get_weather",
+            get(get_weather).route_layer(from_fn(move |req, next| {
+                auth_middleware(
+                    axum::extract::State(std::sync::Arc::new(value.clone())),
+                    req,
+                    next,
+                )
+            })),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state);
     info!("Application initialized successfully");
