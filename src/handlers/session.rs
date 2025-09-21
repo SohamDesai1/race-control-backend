@@ -1,6 +1,9 @@
-use crate::utils::{race_utils::map_session_name, state::AppState};
+use crate::{
+    models::telemetry::TelemetryQuery,
+    utils::{race_utils::map_session_name, state::AppState},
+};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     response::IntoResponse,
     Json,
 };
@@ -201,4 +204,54 @@ pub async fn get_session_data(
     }
     let res: Vec<Value> = latest_laps.into_values().collect();
     return (StatusCode::OK, Json(res)).into_response();
+}
+
+// Helper to parse RFC3339 date string to chrono::DateTime<Utc>
+fn _parse_date(date: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(date)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+pub async fn fetch_telemetry(
+    State(state): State<AppState>,
+    Query(params): Query<TelemetryQuery>,
+) -> impl IntoResponse {
+    let session_key = params.session_key.clone();
+    let driver_number = params.driver_number.clone();
+    // 1. Get latest lap for driver
+    let laps_url = format!(
+        "https://api.openf1.org/v1/laps?session_key={}&driver_number={}",
+        session_key, driver_number
+    );
+    let laps_res = state.http_client.get(laps_url).send().await.unwrap();
+    let laps_body = laps_res.text().await.unwrap();
+    let laps: Vec<Value> = serde_json::from_str(&laps_body).unwrap();
+    // Filter for lap_duration < 120.0 and get latest date_start
+    let mut filtered: Vec<&Value> = laps
+        .iter()
+        .filter(|lap| {
+            lap.get("lap_duration")
+                .and_then(|v| v.as_f64())
+                .map(|d| d < 120.0)
+                .unwrap_or(false)
+                && lap.get("date_start").and_then(|v| v.as_str()).is_some()
+        })
+        .collect();
+    filtered.sort_by(|a, b| {
+        let a_date = a.get("date_start").and_then(|v| v.as_str()).unwrap();
+        let b_date = b.get("date_start").and_then(|v| v.as_str()).unwrap();
+        b_date.cmp(a_date)
+    });
+    let latest_lap = match filtered.first() {
+        Some(lap) => lap,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "No valid lap found"})),
+            )
+                .into_response();
+        }
+    };
+    (StatusCode::OK, Json(latest_lap)).into_response()
 }

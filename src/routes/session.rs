@@ -1,7 +1,7 @@
 use crate::{
     handlers::{
         middleware::auth_middleware,
-        session::{ get_session_data, get_sessions},
+        session::{get_session_data,fetch_telemetry, get_sessions},
     },
     utils::state::AppState,
 };
@@ -12,6 +12,7 @@ pub fn session_routes(state: AppState) -> Router<AppState> {
     let session_router = Router::new()
         .route("/get_sessions/{race_id}", get(get_sessions))
         .route("/get_session_data/{session_key}", get(get_session_data))
+        .route("/fetch_telemetry", get(fetch_telemetry))
         .with_state(state.clone());
 
     session_router.layer(from_fn(move |req, next| {
