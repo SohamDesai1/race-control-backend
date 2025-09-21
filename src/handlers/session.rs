@@ -1,5 +1,5 @@
 use crate::{
-    models::telemetry::TelemetryQuery,
+    models::telemetry::{CarDataPoint, SpeedDistance, TelemetryQuery},
     utils::{race_utils::map_session_name, state::AppState},
 };
 use axum::{
@@ -285,5 +285,38 @@ pub async fn fetch_telemetry(
         cumulative += d;
         distances.push(cumulative);
     }
-    (StatusCode::OK, Json(latest_lap)).into_response()
+    // 3. Fetch car_data for this lap
+    let car_data_url = format!(
+        "https://api.openf1.org/v1/car_data?session_key={}&driver_number={}&date>{}&date<{}",
+        session_key, driver_number, date_start_str, date_end_str
+    );
+    let car_data_res = state.http_client.get(&car_data_url).send().await.unwrap();
+    let car_data_body = car_data_res.text().await.unwrap();
+    let mut car_data_points: Vec<CarDataPoint> = from_str(&car_data_body).unwrap();
+    // Sort by date
+    car_data_points.sort_by(|a, b| a.date.cmp(&b.date));
+
+    // 4. For each car_data point, find the closest location point by timestamp and assign its cumulative distance
+    let location_times: Vec<_> = location_points
+        .iter()
+        .map(|p| _parse_date(p["date"].as_str().unwrap()).unwrap())
+        .collect();
+    let mut result = Vec::with_capacity(car_data_points.len());
+    for car_point in &car_data_points {
+        let car_time = _parse_date(&car_point.date).unwrap();
+        // Find the closest location point
+        let (closest_idx, _) = location_times
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, loc_time)| {
+                (loc_time.timestamp_millis() - car_time.timestamp_millis()).abs()
+            })
+            .unwrap();
+        let distance = distances[closest_idx];
+        result.push(SpeedDistance {
+            speed: car_point.speed,
+            distance: distance / 10.0,
+        });
+    }
+    (StatusCode::OK, Json(result)).into_response()
 }
