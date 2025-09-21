@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
 use std::collections::HashMap;
@@ -253,5 +253,37 @@ pub async fn fetch_telemetry(
                 .into_response();
         }
     };
+    // Get date_start and lap_duration
+    let start = _parse_date(latest_lap["date_start"].as_str().unwrap()).unwrap();
+    let lap_duration = latest_lap["lap_duration"].as_f64().unwrap();
+    let end = start + Duration::milliseconds((lap_duration * 1000.0) as i64);
+    let date_start_str = start.to_rfc3339();
+    let date_end_str = end.to_rfc3339();
+
+    // 2. Fetch location data for this lap
+    let location_url = format!(
+        "https://api.openf1.org/v1/location?session_key={}&driver_number={}&date>{}&date<{}",
+        session_key, driver_number, date_start_str, date_end_str
+    );
+    let location_res = state.http_client.get(&location_url).send().await.unwrap();
+    let location_body = location_res.text().await.unwrap();
+    let mut location_points: Vec<Value> = serde_json::from_str(&location_body).unwrap();
+    // Sort by date
+    location_points.sort_by(|a, b| a["date"].as_str().unwrap().cmp(b["date"].as_str().unwrap()));
+    // Compute cumulative distance for each location point
+    let mut cumulative = 0.0;
+    let mut distances = Vec::with_capacity(location_points.len());
+    distances.push(0.0);
+    for i in 1..location_points.len() {
+        let x1 = location_points[i - 1]["x"].as_f64().unwrap();
+        let y1 = location_points[i - 1]["y"].as_f64().unwrap();
+        let z1 = location_points[i - 1]["z"].as_f64().unwrap();
+        let x2 = location_points[i]["x"].as_f64().unwrap();
+        let y2 = location_points[i]["y"].as_f64().unwrap();
+        let z2 = location_points[i]["z"].as_f64().unwrap();
+        let d = ((x2 - x1).powi(2) + (y2 - y1).powi(2) + (z2 - z1).powi(2)).sqrt();
+        cumulative += d;
+        distances.push(cumulative);
+    }
     (StatusCode::OK, Json(latest_lap)).into_response()
 }
