@@ -11,6 +11,7 @@ use chrono::{DateTime, Duration, Utc};
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
 use std::collections::HashMap;
+use tracing::info;
 
 pub async fn get_sessions(
     State(state): State<AppState>,
@@ -219,104 +220,160 @@ pub async fn fetch_telemetry(
 ) -> impl IntoResponse {
     let session_key = params.session_key.clone();
     let driver_number = params.driver_number.clone();
-    // 1. Get latest lap for driver
-    let laps_url = format!(
-        "https://api.openf1.org/v1/laps?session_key={}&driver_number={}",
-        session_key, driver_number
-    );
-    let laps_res = state.http_client.get(laps_url).send().await.unwrap();
-    let laps_body = laps_res.text().await.unwrap();
-    let laps: Vec<Value> = serde_json::from_str(&laps_body).unwrap();
-    // Filter for lap_duration < 120.0 and get latest date_start
-    let mut filtered: Vec<&Value> = laps
-        .iter()
-        .filter(|lap| {
-            lap.get("lap_duration")
-                .and_then(|v| v.as_f64())
-                .map(|d| d < 120.0)
-                .unwrap_or(false)
-                && lap.get("date_start").and_then(|v| v.as_str()).is_some()
-        })
-        .collect();
-    filtered.sort_by(|a, b| {
-        let a_date = a.get("date_start").and_then(|v| v.as_str()).unwrap();
-        let b_date = b.get("date_start").and_then(|v| v.as_str()).unwrap();
-        b_date.cmp(a_date)
-    });
-    let latest_lap = match filtered.first() {
-        Some(lap) => lap,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "No valid lap found"})),
-            )
-                .into_response();
-        }
-    };
-    // Get date_start and lap_duration
-    let start = _parse_date(latest_lap["date_start"].as_str().unwrap()).unwrap();
-    let lap_duration = latest_lap["lap_duration"].as_f64().unwrap();
-    let end = start + Duration::milliseconds((lap_duration * 1000.0) as i64);
-    let date_start_str = start.to_rfc3339();
-    let date_end_str = end.to_rfc3339();
 
-    // 2. Fetch location data for this lap
-    let location_url = format!(
+    let res = state
+        .supabase
+        .from("TelemetryCache")
+        .select("*")
+        .eq("session_key", session_key.clone())
+        .eq("driver_number", driver_number.clone())
+        .execute()
+        .await;
+    match res {
+        Ok(result) => {
+            let body = result.text().await.unwrap();
+            let res_body: Value = from_str(&body).unwrap();
+            let sessions_array = res_body.as_array().unwrap();
+            if !sessions_array.is_empty() {
+                return (StatusCode::OK, Json(sessions_array[0]["data"].clone())).into_response();
+            } else {
+                info!(
+                    "No cache for session_key {} driver_number {}",
+                    session_key, driver_number
+                );
+                // 1. Get latest lap for driver
+                let laps_url = format!(
+                    "https://api.openf1.org/v1/laps?session_key={}&driver_number={}",
+                    session_key, driver_number
+                );
+                let laps_res = state.http_client.get(laps_url).send().await.unwrap();
+                let laps_body = laps_res.text().await.unwrap();
+                let laps: Vec<Value> = serde_json::from_str(&laps_body).unwrap();
+                // Filter for lap_duration < 120.0 and get latest date_start
+                let mut filtered: Vec<&Value> = laps
+                    .iter()
+                    .filter(|lap| {
+                        lap.get("lap_duration")
+                            .and_then(|v| v.as_f64())
+                            .map(|d| d < 120.0)
+                            .unwrap_or(false)
+                            && lap.get("date_start").and_then(|v| v.as_str()).is_some()
+                    })
+                    .collect();
+                filtered.sort_by(|a, b| {
+                    let a_date = a.get("date_start").and_then(|v| v.as_str()).unwrap();
+                    let b_date = b.get("date_start").and_then(|v| v.as_str()).unwrap();
+                    b_date.cmp(a_date)
+                });
+                let latest_lap = match filtered.first() {
+                    Some(lap) => lap,
+                    None => {
+                        return (
+                            StatusCode::NOT_FOUND,
+                            Json(json!({"error": "No valid lap found"})),
+                        )
+                            .into_response();
+                    }
+                };
+                // Get date_start and lap_duration
+                let start = _parse_date(latest_lap["date_start"].as_str().unwrap()).unwrap();
+                let lap_duration = latest_lap["lap_duration"].as_f64().unwrap();
+                let end = start + Duration::milliseconds((lap_duration * 1000.0) as i64);
+                let date_start_str = start.to_rfc3339();
+                let date_end_str = end.to_rfc3339();
+
+                // 2. Fetch location data for this lap
+                let location_url = format!(
         "https://api.openf1.org/v1/location?session_key={}&driver_number={}&date>{}&date<{}",
         session_key, driver_number, date_start_str, date_end_str
     );
-    let location_res = state.http_client.get(&location_url).send().await.unwrap();
-    let location_body = location_res.text().await.unwrap();
-    let mut location_points: Vec<Value> = serde_json::from_str(&location_body).unwrap();
-    // Sort by date
-    location_points.sort_by(|a, b| a["date"].as_str().unwrap().cmp(b["date"].as_str().unwrap()));
-    // Compute cumulative distance for each location point
-    let mut cumulative = 0.0;
-    let mut distances = Vec::with_capacity(location_points.len());
-    distances.push(0.0);
-    for i in 1..location_points.len() {
-        let x1 = location_points[i - 1]["x"].as_f64().unwrap();
-        let y1 = location_points[i - 1]["y"].as_f64().unwrap();
-        let z1 = location_points[i - 1]["z"].as_f64().unwrap();
-        let x2 = location_points[i]["x"].as_f64().unwrap();
-        let y2 = location_points[i]["y"].as_f64().unwrap();
-        let z2 = location_points[i]["z"].as_f64().unwrap();
-        let d = ((x2 - x1).powi(2) + (y2 - y1).powi(2) + (z2 - z1).powi(2)).sqrt();
-        cumulative += d;
-        distances.push(cumulative);
-    }
-    // 3. Fetch car_data for this lap
-    let car_data_url = format!(
+                let location_res = state.http_client.get(&location_url).send().await.unwrap();
+                let location_body = location_res.text().await.unwrap();
+                let mut location_points: Vec<Value> = serde_json::from_str(&location_body).unwrap();
+                // Sort by date
+                location_points
+                    .sort_by(|a, b| a["date"].as_str().unwrap().cmp(b["date"].as_str().unwrap()));
+                // Compute cumulative distance for each location point
+                let mut cumulative = 0.0;
+                let mut distances = Vec::with_capacity(location_points.len());
+                distances.push(0.0);
+                for i in 1..location_points.len() {
+                    let x1 = location_points[i - 1]["x"].as_f64().unwrap();
+                    let y1 = location_points[i - 1]["y"].as_f64().unwrap();
+                    let z1 = location_points[i - 1]["z"].as_f64().unwrap();
+                    let x2 = location_points[i]["x"].as_f64().unwrap();
+                    let y2 = location_points[i]["y"].as_f64().unwrap();
+                    let z2 = location_points[i]["z"].as_f64().unwrap();
+                    let d = ((x2 - x1).powi(2) + (y2 - y1).powi(2) + (z2 - z1).powi(2)).sqrt();
+                    cumulative += d;
+                    distances.push(cumulative);
+                }
+                // 3. Fetch car_data for this lap
+                let car_data_url = format!(
         "https://api.openf1.org/v1/car_data?session_key={}&driver_number={}&date>{}&date<{}",
         session_key, driver_number, date_start_str, date_end_str
     );
-    let car_data_res = state.http_client.get(&car_data_url).send().await.unwrap();
-    let car_data_body = car_data_res.text().await.unwrap();
-    let mut car_data_points: Vec<CarDataPoint> = from_str(&car_data_body).unwrap();
-    // Sort by date
-    car_data_points.sort_by(|a, b| a.date.cmp(&b.date));
+                let car_data_res = state.http_client.get(&car_data_url).send().await.unwrap();
+                let car_data_body = car_data_res.text().await.unwrap();
+                let mut car_data_points: Vec<CarDataPoint> = from_str(&car_data_body).unwrap();
+                // Sort by date
+                car_data_points.sort_by(|a, b| a.date.cmp(&b.date));
 
-    // 4. For each car_data point, find the closest location point by timestamp and assign its cumulative distance
-    let location_times: Vec<_> = location_points
-        .iter()
-        .map(|p| _parse_date(p["date"].as_str().unwrap()).unwrap())
-        .collect();
-    let mut result = Vec::with_capacity(car_data_points.len());
-    for car_point in &car_data_points {
-        let car_time = _parse_date(&car_point.date).unwrap();
-        // Find the closest location point
-        let (closest_idx, _) = location_times
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, loc_time)| {
-                (loc_time.timestamp_millis() - car_time.timestamp_millis()).abs()
-            })
-            .unwrap();
-        let distance = distances[closest_idx];
-        result.push(SpeedDistance {
-            speed: car_point.speed,
-            distance: distance / 10.0,
-        });
+                // 4. For each car_data point, find the closest location point by timestamp and assign its cumulative distance
+                let location_times: Vec<_> = location_points
+                    .iter()
+                    .map(|p| _parse_date(p["date"].as_str().unwrap()).unwrap())
+                    .collect();
+                let mut result = Vec::with_capacity(car_data_points.len());
+                for car_point in &car_data_points {
+                    let car_time = _parse_date(&car_point.date).unwrap();
+                    // Find the closest location point
+                    let (closest_idx, _) = location_times
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, loc_time)| {
+                            (loc_time.timestamp_millis() - car_time.timestamp_millis()).abs()
+                        })
+                        .unwrap();
+                    let distance = distances[closest_idx];
+                    result.push(SpeedDistance {
+                        speed: car_point.speed,
+                        distance: distance / 10.0,
+                    });
+                }
+                // save to database
+                let insert_res = state
+                    .supabase
+                    .from("TelemetryCache")
+                    .upsert(
+                        &json!({
+                            "session_key": session_key,
+                            "driver_number": driver_number,
+                            "data": result,
+                            "updated_at": Utc::now().to_rfc3339(),
+                        })
+                        .to_string(),
+                    )
+                    .execute()
+                    .await;
+                match insert_res {
+                    Ok(_) => println!(
+                        "Upserted telemetry cache for session_key {} driver_number {}",
+                        session_key, driver_number
+                    ),
+                    Err(err) => eprintln!("Failed to upsert telemetry cache: {:?}", err),
+                }
+
+                (StatusCode::OK, Json(result)).into_response()
+            }
+        }
+        Err(err) => {
+            eprintln!("Database query failed: {:?}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "Failed to fetch session" })),
+            )
+                .into_response();
+        }
     }
-    (StatusCode::OK, Json(result)).into_response()
 }
