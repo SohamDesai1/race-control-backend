@@ -4,6 +4,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use chrono::Utc;
 use http::StatusCode;
 use serde_json::{from_str, Value};
 
@@ -31,6 +32,32 @@ pub async fn get_race_data_db(State(state): State<AppState>) -> impl IntoRespons
         .supabase
         .from("Races")
         .select("*")
+        .order("date.asc")
+        .execute()
+        .await;
+    // }
+    match res {
+        Ok(result) => {
+            let body = result.text().await.unwrap();
+            let res_body: Value = from_str(&body).unwrap();
+            return (StatusCode::OK, Json(res_body.clone())).into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch races".to_string(),
+            )
+                .into_response()
+        }
+    }
+}
+pub async fn get_upcoming_race_data(State(state): State<AppState>) -> impl IntoResponse {
+    let today = Utc::now().date_naive().format("%Y-%m-%d").to_string();
+    let res = state
+        .supabase
+        .from("Races")
+        .select("*")
+        .gte("date", today)
         .order("date.asc")
         .execute()
         .await;
