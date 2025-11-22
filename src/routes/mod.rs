@@ -28,15 +28,11 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
     info!("Configuration loaded successfully");
 
     let supabase = Postgrest::new(&format!("{}/rest/v1", &config.supabase_project_url))
-        .insert_header("apikey", &config.supabase_annon_key)
-        .insert_header(
-            "Authorization",
-            &format!("Bearer {}", &config.supabase_jwt_token),
-        );
+        .insert_header("apikey", &config.supabase_anon_key);
     let supabase_auth = AuthClient::new(
         &config.supabase_project_url,
-        &config.supabase_annon_key,
-        &config.supabase_jwt_token,
+        &config.supabase_anon_key,
+        &config.supabase_service_role_key,
     );
 
     let http_client = reqwest::Client::new();
