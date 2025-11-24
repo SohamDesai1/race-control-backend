@@ -6,7 +6,7 @@ use axum::{
 };
 use chrono::Utc;
 use http::StatusCode;
-use serde_json::{from_str, Value};
+use serde_json::{from_str, json, Value};
 
 pub async fn get_race_results(
     State(state): State<AppState>,
@@ -53,28 +53,67 @@ pub async fn get_race_data_db(State(state): State<AppState>) -> impl IntoRespons
 }
 pub async fn get_upcoming_race_data(State(state): State<AppState>) -> impl IntoResponse {
     let today = Utc::now().date_naive().format("%Y-%m-%d").to_string();
+
+    // Fetch all upcoming races
     let res = state
         .supabase
         .from("Races")
         .select("*")
-        .gte("date", today)
+        .gte("date", &today)
         .order("date.asc")
         .execute()
         .await;
-    // }
+
     match res {
         Ok(result) => {
             let body = result.text().await.unwrap();
-            let res_body: Value = from_str(&body).unwrap();
-            return (StatusCode::OK, Json(res_body.clone())).into_response();
+            let races: Value = from_str(&body).unwrap();
+
+            if let Some(race_array) = races.as_array() {
+                if race_array.is_empty() {
+                    return (StatusCode::NOT_FOUND, Json(json!([]))).into_response();
+                }
+
+                let mut races_with_circuits = Vec::new();
+
+                for race in race_array {
+                    let mut race_data = race.as_object().cloned().unwrap_or_default();
+
+                    if let Some(circuit_id) = race.get("circuitId").and_then(|v| v.as_str()) {
+                        let circuit_res = state
+                            .supabase
+                            .from("Circuits")
+                            .select("*")
+                            .eq("circuitId", circuit_id)
+                            .execute()
+                            .await;
+
+                        if let Ok(circuit_result) = circuit_res {
+                            if let Ok(circuit_body) = circuit_result.text().await {
+                                if let Ok(circuit_data) = from_str::<Value>(&circuit_body) {
+                                    if let Some(circuit_array) = circuit_data.as_array() {
+                                        if let Some(circuit) = circuit_array.get(0) {
+                                            if let Some(circuit_obj) = circuit.as_object() {
+                                                for (key, value) in circuit_obj {
+                                                    race_data.insert(key.clone(), value.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    races_with_circuits.push(json!(race_data));
+                }
+
+                return (StatusCode::OK, Json(races_with_circuits)).into_response();
+            }
+
+            (StatusCode::OK, Json(json!([]))).into_response()
         }
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to fetch races".to_string(),
-            )
-                .into_response()
-        }
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch races").into_response(),
     }
 }
 
