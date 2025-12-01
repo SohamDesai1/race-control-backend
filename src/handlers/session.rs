@@ -1,5 +1,8 @@
 use crate::{
-    models::telemetry::{CarDataPoint, SpeedDistance, TelemetryQuery},
+    models::telemetry::{
+        CarDataPoint, DriverLapGraph, LapPosition, LapRecord, PositionRecord, SpeedDistance,
+        TelemetryQuery,
+    },
     utils::{race_utils::map_session_name, state::AppState},
 };
 use axum::{
@@ -376,4 +379,93 @@ pub async fn fetch_telemetry(
                 .into_response();
         }
     }
+}
+
+pub async fn get_graph_data(
+    State(state): State<AppState>,
+    Path(session_key): Path<String>,
+) -> Json<Vec<DriverLapGraph>> {
+    let laps_url = format!("https://api.openf1.org/v1/laps?session_key={}", session_key);
+    let laps_resp = state.http_client.get(&laps_url).send().await.unwrap();
+    let laps_body = laps_resp.text().await.unwrap();
+    let laps: Vec<LapRecord> = from_str(&laps_body).unwrap();
+
+    let mut laps_by_driver: HashMap<u32, Vec<LapRecord>> = HashMap::new();
+    for lap in laps {
+        laps_by_driver
+            .entry(lap.driver_number)
+            .or_default()
+            .push(lap);
+    }
+
+    let positions_url = format!(
+        "https://api.openf1.org/v1/position?session_key={}",
+        session_key
+    );
+    let positions_resp = state.http_client.get(&positions_url).send().await.unwrap();
+    let positions_body = positions_resp.text().await.unwrap();
+    let positions: Vec<PositionRecord> = from_str(&positions_body).unwrap();
+
+    let mut positions_by_driver: HashMap<u32, Vec<PositionRecord>> = HashMap::new();
+    for pos in positions {
+        positions_by_driver
+            .entry(pos.driver_number)
+            .or_default()
+            .push(pos);
+    }
+
+    for pos_list in positions_by_driver.values_mut() {
+        pos_list.sort_by_key(|p| p.date);
+    }
+
+    let mut response = Vec::new();
+
+    for (driver, mut driver_laps) in laps_by_driver {
+        let mut graph = Vec::new();
+
+        driver_laps.sort_by_key(|l| l.date_start);
+
+        if let Some(pos_list) = positions_by_driver.get(&driver) {
+            if pos_list.is_empty() {
+                continue;
+            }
+
+            let mut pos_idx = 0usize;
+            let mut last_pos = pos_list[0].position;
+
+            graph.push(LapPosition {
+                lap: 1,
+                position: last_pos,
+            });
+
+            for lap in driver_laps {
+                let Some(ts) = lap.date_start else { continue };
+
+                while pos_idx < pos_list.len() && pos_list[pos_idx].date <= ts {
+                    last_pos = pos_list[pos_idx].position;
+                    pos_idx += 1;
+                }
+
+                graph.push(LapPosition {
+                    lap: lap.lap_number,
+                    position: last_pos,
+                });
+            }
+        }
+
+        response.push(DriverLapGraph {
+            driver_number: driver,
+            data: graph,
+        });
+    }
+
+    response.sort_by(|a, b| {
+        a.data
+            .last()
+            .unwrap()
+            .position
+            .cmp(&b.data.last().unwrap().position)
+    });
+
+    Json(response)
 }
