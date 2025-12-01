@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -25,4 +26,33 @@ pub struct CarDataPoint {
 pub struct SpeedDistance {
     pub speed: f64,
     pub distance: f64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LapRecord {
+    pub lap_number: u32,
+
+    #[serde(rename = "date_start")]
+    pub date_start: Option<DateTime<Utc>>, 
+
+    pub driver_number: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PositionRecord {
+    pub position: u32,
+    pub driver_number: u32,
+    pub date: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LapPosition {
+    pub lap: u32,
+    pub position: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DriverLapGraph {
+    pub driver_number: u32,
+    pub data: Vec<LapPosition>,
 }
