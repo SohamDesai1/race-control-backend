@@ -7,7 +7,7 @@ use dashmap::DashMap;
 use http::StatusCode;
 use postgrest::Postgrest;
 use serde_json::json;
-use std::error::Error;
+use std::{error::Error, sync::Arc};
 use supabase_auth::models::AuthClient;
 use tower_http::trace::TraceLayer;
 use tracing::{info, Level};
@@ -42,13 +42,13 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
 
     let cache: DashMap<String, CacheEntry<Vec<DriverLapGraph>>> = DashMap::new();
 
-    let state = AppState {
+    let state = Arc::new(AppState {
         supabase,
         supabase_auth,
         config,
         http_client,
         cache,
-    };
+    });
 
     let log_level = std::env::var("LOG_LEVEL")
         .unwrap_or_else(|_| "info".to_string())
@@ -87,7 +87,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
             "/get_weather",
             get(get_weather).route_layer(from_fn(move |req, next| {
                 auth_middleware(
-                    axum::extract::State(std::sync::Arc::new(value.clone())),
+                    axum::extract::State(value.clone()),
                     req,
                     next,
                 )

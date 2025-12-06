@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{routing::post, Router};
 
 use crate::{
@@ -5,7 +7,7 @@ use crate::{
     utils::state::AppState,
 };
 
-pub fn auth_routes() -> Router<AppState> {
+pub fn auth_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/google", post(google_auth))
         .route("/login", post(login))
