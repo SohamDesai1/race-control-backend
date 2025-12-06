@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::utils::state::AppState;
 use axum::{
     extract::{Path, State},
@@ -8,7 +10,7 @@ use http::StatusCode;
 use serde_json::{from_str, Value};
 
 pub async fn driver_standings(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     season: Option<Path<String>>,
 ) -> impl IntoResponse {
     let season = season
@@ -29,7 +31,7 @@ pub async fn driver_standings(
 }
 
 pub async fn constructor_standings(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     season: Option<Path<String>>,
 ) -> impl IntoResponse {
     let season = season

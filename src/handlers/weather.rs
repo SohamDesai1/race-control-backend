@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::utils::state::AppState;
 use axum::{
     extract::{Query, State},
@@ -16,7 +18,7 @@ pub struct WeatherQuery {
 }
 
 pub async fn get_weather(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Query(params): Query<WeatherQuery>,
 ) -> impl IntoResponse {
     let session_key = params.session_key.unwrap_or_else(|| "latest".to_string());

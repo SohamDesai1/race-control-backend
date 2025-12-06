@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::utils::state::AppState;
 use axum::{
     extract::{Path, State},
@@ -9,7 +11,7 @@ use http::StatusCode;
 use serde_json::{from_str, json, Value};
 
 pub async fn get_race_results(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     round: Option<Path<String>>,
 ) -> impl IntoResponse {
     let round = round.map(|Path(r)| r).unwrap_or_else(|| "last".to_string());
@@ -27,7 +29,7 @@ pub async fn get_race_results(
     (StatusCode::OK, Json(res_body)).into_response()
 }
 
-pub async fn get_race_data_db(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn get_race_data_db(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let res = state
         .supabase
         .from("Races")
@@ -51,7 +53,7 @@ pub async fn get_race_data_db(State(state): State<AppState>) -> impl IntoRespons
         }
     }
 }
-pub async fn get_upcoming_race_data(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn get_upcoming_race_data(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let today = Utc::now().date_naive().format("%Y-%m-%d").to_string();
 
     // Fetch all upcoming races
@@ -117,7 +119,7 @@ pub async fn get_upcoming_race_data(State(state): State<AppState>) -> impl IntoR
     }
 }
 
-// pub async fn insert_race_and_circuit(State(state): State<AppState>) -> impl IntoResponse {
+// pub async fn insert_race_and_circuit(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 //     let client = reqwest::Client::new();
 //     let res = client
 //         .get("https://api.jolpi.ca/ergast/f1/2025/races/?format=json")

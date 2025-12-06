@@ -16,11 +16,11 @@ use axum::{
 use chrono::{DateTime, Duration, Utc};
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 use tracing::info;
 
 pub async fn get_sessions(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Path(race_id): Path<String>,
 ) -> impl IntoResponse {
     let res = state
@@ -166,7 +166,7 @@ pub async fn get_sessions(
 }
 
 pub async fn get_session_data(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Path(session_key): Path<String>,
 ) -> impl IntoResponse {
     let mut latest_laps: HashMap<String, Value> = HashMap::new();
@@ -221,7 +221,7 @@ fn _parse_date(date: &str) -> Option<DateTime<Utc>> {
 }
 
 pub async fn fetch_telemetry(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Query(params): Query<TelemetryQuery>,
 ) -> impl IntoResponse {
     let session_key = params.session_key.clone();
@@ -387,7 +387,7 @@ pub async fn fetch_telemetry(
 const TTL_SECONDS: i64 = 60 * 60;
 
 pub async fn get_graph_data(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Path(session_key): Path<String>,
 ) -> Json<Vec<DriverLapGraph>> {
     let cache_key = format!("session_graph_{}", session_key);

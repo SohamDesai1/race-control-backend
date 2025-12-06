@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     models::user::User,
     utils::{hash_password::hash_password, state::AppState},
@@ -7,7 +9,7 @@ use http::StatusCode;
 use serde_json::{from_str, json, Value};
 
 pub async fn register(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<User>,
 ) -> impl IntoResponse {
     if payload.password.is_none() {
@@ -90,7 +92,7 @@ pub async fn register(
     }
 }
 
-pub async fn login(State(state): State<AppState>, Json(payload): Json<User>) -> impl IntoResponse {
+pub async fn login(State(state): State<Arc<AppState>>, Json(payload): Json<User>) -> impl IntoResponse {
     let email = payload.email.clone();
     let password = payload.password.unwrap_or_default();
     let session = state
@@ -148,7 +150,7 @@ pub async fn login(State(state): State<AppState>, Json(payload): Json<User>) -> 
 }
 
 pub async fn google_auth(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<User>,
 ) -> impl IntoResponse {
     let email = payload.email.clone();
@@ -216,7 +218,7 @@ pub async fn google_auth(
 }
 
 pub async fn refresh_token_handler(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<User>,
 ) -> impl IntoResponse {
     let refresh_token = payload.refresh_token.unwrap_or_default();
