@@ -1,7 +1,10 @@
 use crate::{
-    models::telemetry::{
-        CarDataPoint, DriverLapGraph, LapPosition, LapRecord, PositionRecord, SpeedDistance,
-        TelemetryQuery,
+    models::{
+        cache::CacheEntry,
+        telemetry::{
+            CarDataPoint, DriverLapGraph, LapPosition, LapRecord, PositionRecord, SpeedDistance,
+            TelemetryQuery,
+        },
     },
     utils::{race_utils::map_session_name, state::AppState},
 };
@@ -381,10 +384,25 @@ pub async fn fetch_telemetry(
     }
 }
 
+const TTL_SECONDS: i64 = 60 * 60;
+
 pub async fn get_graph_data(
     State(state): State<AppState>,
     Path(session_key): Path<String>,
 ) -> Json<Vec<DriverLapGraph>> {
+    let cache_key = format!("session_graph_{}", session_key);
+
+    if let Some(entry) = state.cache.get(&cache_key) {
+        if !entry.is_expired() {
+            println!("CACHE HIT for session {}", session_key);
+            return Json(entry.value.clone());
+        }
+        println!("CACHE EXPIRED for session {}, recomputing…", session_key);
+        state.cache.remove(&cache_key);
+    }
+
+    println!("CACHE MISS for session {}, computing…", session_key);
+
     let laps_url = format!("https://api.openf1.org/v1/laps?session_key={}", session_key);
     let laps_resp = state.http_client.get(&laps_url).send().await.unwrap();
     let laps_body = laps_resp.text().await.unwrap();
@@ -466,6 +484,9 @@ pub async fn get_graph_data(
             .position
             .cmp(&b.data.last().unwrap().position)
     });
+    state
+        .cache
+        .insert(cache_key, CacheEntry::new(response.clone(), TTL_SECONDS));
 
     Json(response)
 }
