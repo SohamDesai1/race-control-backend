@@ -28,30 +28,30 @@ pub struct SpeedDistance {
     pub distance: f64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct LapRecord {
     pub lap_number: u32,
 
     #[serde(rename = "date_start")]
-    pub date_start: Option<DateTime<Utc>>, 
+    pub date_start: Option<DateTime<Utc>>,
 
     pub driver_number: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct PositionRecord {
     pub position: u32,
     pub driver_number: u32,
     pub date: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct LapPosition {
     pub lap: u32,
     pub position: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct DriverLapGraph {
     pub driver_number: u32,
     pub data: Vec<LapPosition>,
