@@ -29,3 +29,4 @@ tower-http = { version = "0.6.6", features = [
     "compression-full",
 ] }
 uuid = { version = "1.18.1", features = ["v4"] }
+dashmap = { version = "6.1.0", features = ["serde"] }

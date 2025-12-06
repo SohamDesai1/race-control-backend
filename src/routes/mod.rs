@@ -3,6 +3,7 @@ pub mod session;
 pub mod standings;
 pub mod users;
 use axum::{middleware::from_fn, response::IntoResponse, routing::get, Json, Router};
+use dashmap::DashMap;
 use http::StatusCode;
 use postgrest::Postgrest;
 use serde_json::json;
@@ -17,6 +18,7 @@ pub use auth::auth_routes;
 
 use crate::{
     handlers::{middleware::auth_middleware, weather::get_weather},
+    models::{cache::CacheEntry, telemetry::DriverLapGraph},
     routes::{race::race_routes, session::session_routes, standings::standings_routes},
     utils::{config::Config, state::AppState},
 };
@@ -38,11 +40,14 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
     let http_client = reqwest::Client::new();
     info!("External clients initialized successfully");
 
+    let cache: DashMap<String, CacheEntry<Vec<DriverLapGraph>>> = DashMap::new();
+
     let state = AppState {
         supabase,
         supabase_auth,
         config,
         http_client,
+        cache,
     };
 
     let log_level = std::env::var("LOG_LEVEL")
