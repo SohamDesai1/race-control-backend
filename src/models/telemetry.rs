@@ -22,7 +22,7 @@ pub struct CarDataPoint {
     pub drs: Option<u32>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize,Clone)]
 pub struct SpeedDistance {
     pub speed: f64,
     pub distance: f64,

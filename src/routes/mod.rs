@@ -18,7 +18,7 @@ pub use auth::auth_routes;
 
 use crate::{
     handlers::{middleware::auth_middleware, weather::get_weather},
-    models::{cache::CacheEntry, telemetry::DriverLapGraph},
+    models::{cache::CacheEntry, telemetry::{DriverLapGraph, SpeedDistance}},
     routes::{race::race_routes, session::session_routes, standings::standings_routes},
     utils::{config::Config, state::AppState},
 };
@@ -39,15 +39,19 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
 
     let http_client = reqwest::Client::new();
     info!("External clients initialized successfully");
-
-    let cache: DashMap<String, CacheEntry<Vec<DriverLapGraph>>> = DashMap::new();
+    
+    let fetch_driver_telemetry_cache: DashMap<String, CacheEntry<Vec<SpeedDistance>>> =
+        DashMap::new();
+    let get_drivers_position_telemetry_cache: DashMap<String, CacheEntry<Vec<DriverLapGraph>>> =
+        DashMap::new();
 
     let state = Arc::new(AppState {
         supabase,
         supabase_auth,
         config,
         http_client,
-        cache,
+        fetch_driver_telemetry_cache,
+        get_drivers_position_telemetry_cache,
     });
 
     let log_level = std::env::var("LOG_LEVEL")
@@ -86,11 +90,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         .route(
             "/get_weather",
             get(get_weather).route_layer(from_fn(move |req, next| {
-                auth_middleware(
-                    axum::extract::State(value.clone()),
-                    req,
-                    next,
-                )
+                auth_middleware(axum::extract::State(value.clone()), req, next)
             })),
         )
         .layer(TraceLayer::new_for_http())

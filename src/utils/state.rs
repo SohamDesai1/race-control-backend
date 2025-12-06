@@ -1,5 +1,5 @@
 use crate::{
-    models::{cache::CacheEntry, telemetry::DriverLapGraph},
+    models::{cache::CacheEntry, telemetry::{DriverLapGraph, SpeedDistance}},
     utils::config::Config,
 };
 use dashmap::DashMap;
@@ -13,5 +13,6 @@ pub struct AppState {
     pub supabase_auth: AuthClient,
     pub config: Config,
     pub http_client: Client,
-    pub cache: DashMap<String, CacheEntry<Vec<DriverLapGraph>>>,
+    pub fetch_driver_telemetry_cache: DashMap<String, CacheEntry<Vec<SpeedDistance>>>,
+    pub get_drivers_position_telemetry_cache: DashMap<String, CacheEntry<Vec<DriverLapGraph>>>,
 }
