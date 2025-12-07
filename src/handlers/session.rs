@@ -2,8 +2,7 @@ use crate::{
     models::{
         cache::CacheEntry,
         telemetry::{
-            CarDataPoint, DriverLapGraph, FastestLapSector, LapPosition, LapRecord, PositionRecord,
-            SpeedDistance, TelemetryQuery,
+            CarDataPoint, DriverLapGraph, FastestLapSector, Lap, LapPosition, LapRecord, LocationPoint, PacePoint, PaceQuery, PositionRecord, SpeedDistance, TelemetryQuery
         },
     },
     utils::{race_utils::map_session_name, state::AppState},
@@ -16,8 +15,8 @@ use axum::{
 use chrono::{DateTime, Duration, Utc};
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
-use tracing::info;
 use std::{collections::HashMap, sync::Arc};
+use tracing::info;
 
 pub async fn get_sessions(
     State(state): State<Arc<AppState>>,
@@ -570,4 +569,159 @@ pub async fn get_sector_timings(
         .insert(cache_key, CacheEntry::new(response.clone(), TTL_SECONDS));
 
     (StatusCode::OK, Json(response)).into_response()
+}
+
+async fn get_fastest_lap(
+    client: &reqwest::Client,
+    session: &str,
+    driver: u32,
+) -> Option<(String, f64)> {
+    let url = format!(
+        "https://api.openf1.org/v1/laps?session_key={}&driver_number={}",
+        session, driver
+    );
+
+    let laps: Vec<Lap> = client.get(url).send().await.ok()?.json().await.ok()?;
+
+    let lap = laps
+        .into_iter()
+        .filter(|l| l.lap_duration.is_some() && l.date_start.is_some())
+        .min_by(|a, b| {
+            a.lap_duration
+                .unwrap()
+                .partial_cmp(&b.lap_duration.unwrap())
+                .unwrap()
+        })?;
+
+    Some((lap.date_start.unwrap(), lap.lap_duration.unwrap()))
+}
+
+async fn get_telemetry_with_distance(
+    client: &reqwest::Client,
+    session: &str,
+    driver: u32,
+    start: &str,
+    duration: f64,
+) -> Vec<(f64, f64, f64)> {
+    let start_dt = chrono::DateTime::parse_from_rfc3339(start).unwrap();
+    let end_dt = start_dt + chrono::Duration::milliseconds((duration * 1000.0) as i64);
+
+    let loc_url = format!(
+        "https://api.openf1.org/v1/location?session_key={}&driver_number={}&date>{}&date<{}",
+        session,
+        driver,
+        start_dt.to_rfc3339(),
+        end_dt.to_rfc3339()
+    );
+
+    let car_url = format!(
+        "https://api.openf1.org/v1/car_data?session_key={}&driver_number={}&date>{}&date<{}",
+        session,
+        driver,
+        start_dt.to_rfc3339(),
+        end_dt.to_rfc3339()
+    );
+
+    let locations: Vec<LocationPoint> = client
+        .get(loc_url)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let car_data: Vec<CarDataPoint> = client
+        .get(car_url)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let mut _distance = 0.0;
+    let mut output = vec![];
+
+    for i in 1..locations.len() {
+        let dx = locations[i].x - locations[i - 1].x;
+        let dy = locations[i].y - locations[i - 1].y;
+        let dz = locations[i].z - locations[i - 1].z;
+        let d = (dx * dx + dy * dy + dz * dz).sqrt();
+        _distance += d;
+
+        let speed = car_data
+            .iter()
+            .min_by_key(|c| {
+                let t1 = chrono::DateTime::parse_from_rfc3339(&c.date)
+                    .unwrap()
+                    .timestamp_millis();
+                let t2 = chrono::DateTime::parse_from_rfc3339(&locations[i].date)
+                    .unwrap()
+                    .timestamp_millis();
+                (t1 - t2).abs()
+            })
+            .map(|x| x.speed)
+            .unwrap_or(0.0);
+
+        output.push((locations[i].x, locations[i].y, speed));
+    }
+
+    output
+}
+
+pub fn compute_minisector_pace(a: Vec<(f64, f64, f64)>, b: Vec<(f64, f64, f64)>) -> Vec<PacePoint> {
+    let num_minisectors = 25;
+    let total_distance = a.len().max(b.len()) as f64;
+    let minisector_len = total_distance / num_minisectors as f64;
+
+    let mut results = vec![];
+
+    for i in 0..num_minisectors {
+        let start = (i as f64 * minisector_len) as usize;
+        let end = ((i + 1) as f64 * minisector_len) as usize;
+
+        let avg_a = a[start.min(a.len())..end.min(a.len())]
+            .iter()
+            .map(|x| x.2)
+            .sum::<f64>()
+            / (end - start).max(1) as f64;
+
+        let avg_b = b[start.min(b.len())..end.min(b.len())]
+            .iter()
+            .map(|x| x.2)
+            .sum::<f64>()
+            / (end - start).max(1) as f64;
+
+        let fastest = if avg_a > avg_b { 1 } else { 2 };
+
+        if let Some(p) = a.get(start) {
+            results.push(PacePoint {
+                x: p.0,
+                y: p.1,
+                minisector: i as u32,
+                fastest_driver: fastest,
+            });
+        }
+    }
+
+    results
+}
+
+pub async fn compare_race_pace(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaceQuery>,
+) -> impl IntoResponse {
+    let session = params.session_key.clone();
+    let d1 = params.driver_1;
+    let d2 = params.driver_2;
+
+    let (s1, dur1) = get_fastest_lap(&state.http_client, &session, d1).await.unwrap();
+    let (s2, dur2) = get_fastest_lap(&state.http_client, &session, d2).await.unwrap();
+
+    let t1 = get_telemetry_with_distance(&state.http_client, &session, d1, &s1, dur1).await;
+    let t2 = get_telemetry_with_distance(&state.http_client, &session, d2, &s2, dur2).await;
+
+    let result = compute_minisector_pace(t1, t2);
+
+    Json(result)
 }

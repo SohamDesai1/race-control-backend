@@ -2,8 +2,8 @@ use crate::{
     handlers::{
         middleware::auth_middleware,
         session::{
-            fetch_driver_telemetry, get_drivers_position_telemetry, get_sector_timings,
-            get_session_data, get_sessions,
+            compare_race_pace, fetch_driver_telemetry, get_drivers_position_telemetry,
+            get_sector_timings, get_session_data, get_sessions,
         },
     },
     utils::state::AppState,
@@ -21,6 +21,7 @@ pub fn session_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(get_drivers_position_telemetry),
         )
         .route("/get_sector_timings/{session_key}", get(get_sector_timings))
+        .route("/compare_race_pace", get(compare_race_pace))
         .with_state(state.clone());
 
     session_router.layer(from_fn(move |req, next| {
