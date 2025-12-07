@@ -56,3 +56,13 @@ pub struct DriverLapGraph {
     pub driver_number: u32,
     pub data: Vec<LapPosition>,
 }
+
+#[derive(Serialize)]
+pub struct FastestLapSector {
+    pub position: u32,
+    pub driver_number: u32,
+    pub fastest_lap: f64,
+    pub sector_1: f64,
+    pub sector_2: f64,
+    pub sector_3: f64,
+}
