@@ -2,8 +2,8 @@ use crate::{
     models::{
         cache::CacheEntry,
         telemetry::{
-            CarDataPoint, DriverLapGraph, LapPosition, LapRecord, PositionRecord, SpeedDistance,
-            TelemetryQuery,
+            CarDataPoint, DriverLapGraph, FastestLapSector, LapPosition, LapRecord, PositionRecord,
+            SpeedDistance, TelemetryQuery,
         },
     },
     utils::{race_utils::map_session_name, state::AppState},
@@ -454,4 +454,99 @@ pub async fn get_drivers_position_telemetry(
         .insert(cache_key, CacheEntry::new(response.clone(), TTL_SECONDS));
 
     Json(response)
+}
+
+pub async fn get_sector_timings(
+    State(state): State<Arc<AppState>>,
+    Path(session_key): Path<String>,
+) -> impl IntoResponse {
+    //  Get fastest lap from session_result
+    let result_url = format!(
+        "https://api.openf1.org/v1/session_result?session_key={}&position<=3",
+        session_key
+    );
+
+    let result_body = match state.http_client.get(result_url).send().await {
+        Ok(r) => r.text().await.unwrap(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "Failed to fetch session_result" })),
+            )
+                .into_response();
+        }
+    };
+
+    let session_results: Vec<Value> = serde_json::from_str(&result_body).unwrap_or_default();
+    let mut response = Vec::new();
+
+    // ✅ STEP 2: Process each top-3 driver
+    for driver in session_results {
+        let position = driver["position"].as_u64().unwrap() as u32;
+        let driver_number = driver["driver_number"].as_u64().unwrap() as u32;
+
+        // ✅ Fastest lap = last value from duration array
+        let fastest_lap = match driver["duration"]
+            .as_array()
+            .and_then(|d| d.last())
+            .and_then(|v| v.as_f64())
+        {
+            Some(v) => v,
+            None => continue,
+        };
+
+        // ✅ STEP 3: Fetch laps for that driver
+        let laps_url = format!(
+            "https://api.openf1.org/v1/laps?session_key={}&driver_number={}",
+            session_key, driver_number
+        );
+
+        let laps_body = match state.http_client.get(laps_url).send().await {
+            Ok(r) => r.text().await.unwrap(),
+            Err(_) => continue,
+        };
+
+        let laps: Vec<Value> = serde_json::from_str(&laps_body).unwrap_or_default();
+
+        // ✅ STEP 4: Match fastest lap from laps API
+        let matching_lap = laps.iter().find(|lap| {
+            lap.get("lap_duration")
+                .and_then(|v| v.as_f64())
+                .map(|d| (d - fastest_lap).abs() < 0.001)
+                .unwrap_or(false)
+        });
+
+        let lap = match matching_lap {
+            Some(l) => l,
+            None => continue,
+        };
+
+        let sector_1 = lap
+            .get("duration_sector_1")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+
+        let sector_2 = lap
+            .get("duration_sector_2")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+
+        let sector_3 = lap
+            .get("duration_sector_3")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+
+        response.push(FastestLapSector {
+            position,
+            driver_number,
+            fastest_lap,
+            sector_1,
+            sector_2,
+            sector_3,
+        });
+    }
+
+    response.sort_by_key(|r| r.position);
+
+    (StatusCode::OK, Json(response)).into_response()
 }
