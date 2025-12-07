@@ -66,3 +66,32 @@ pub struct FastestLapSector {
     pub sector_2: f64,
     pub sector_3: f64,
 }
+
+#[derive(Deserialize)]
+pub struct PaceQuery {
+    pub session_key: String,
+    pub driver_1: u32,
+    pub driver_2: u32,
+}
+
+#[derive(Deserialize)]
+pub struct LocationPoint {
+    pub date: String,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+#[derive(Deserialize)]
+pub struct Lap {
+    pub lap_duration: Option<f64>,
+    pub date_start: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct PacePoint {
+    pub x: f64,
+    pub y: f64,
+    pub minisector: u32,
+    pub fastest_driver: u32, 
+}
