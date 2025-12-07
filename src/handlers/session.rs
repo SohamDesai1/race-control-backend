@@ -16,6 +16,7 @@ use axum::{
 use chrono::{DateTime, Duration, Utc};
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
+use tracing::info;
 use std::{collections::HashMap, sync::Arc};
 
 pub async fn get_sessions(
@@ -34,7 +35,7 @@ pub async fn get_sessions(
         Ok(result) => {
             let body = result.text().await.unwrap();
             let res_body: Value = from_str(&body).unwrap();
-            println!("RESS {:?}", res_body);
+            info!("RESS {:?}", res_body);
             let sessions_array = res_body.as_array().unwrap();
             let all_have_session_keys = sessions_array.iter().all(|session| {
                 session.get("session_key").is_some()
@@ -44,7 +45,7 @@ pub async fn get_sessions(
             if all_have_session_keys && !sessions_array.is_empty() {
                 return (StatusCode::OK, Json(json!({"sessions":res_body}))).into_response();
             } else {
-                println!("fallback");
+                info!("fallback");
                 let fallback_res = state
                     .http_client
                     .get(format!(
@@ -74,7 +75,7 @@ pub async fn get_sessions(
                                     "meeting_key": meeting_key
                                 });
 
-                                println!(
+                                info!(
                                     "Updating {} with payload: {:?}",
                                     mapped_name, update_payload
                                 );
@@ -230,13 +231,13 @@ pub async fn fetch_driver_telemetry(
     let cache_key = format!("session_drivers_position_graph_{}", session_key);
     if let Some(entry) = state.fetch_driver_telemetry_cache.get(&cache_key) {
         if !entry.is_expired() {
-            println!(
+            info!(
                 "CACHE HIT for session {} driver {}",
                 session_key, driver_number
             );
             return (StatusCode::OK, Json(entry.value.clone())).into_response();
         }
-        println!(
+        info!(
             "CACHE EXPIRED for session {} driver {}, recomputing…",
             session_key, driver_number
         );
@@ -357,16 +358,16 @@ pub async fn get_drivers_position_telemetry(
 
     if let Some(entry) = state.get_drivers_position_telemetry_cache.get(&cache_key) {
         if !entry.is_expired() {
-            println!("CACHE HIT for session {}", session_key);
+            info!("CACHE HIT for session {}", session_key);
             return Json(entry.value.clone());
         }
-        println!("CACHE EXPIRED for session {}, recomputing…", session_key);
+        info!("CACHE EXPIRED for session {}, recomputing…", session_key);
         state
             .get_drivers_position_telemetry_cache
             .remove(&cache_key);
     }
 
-    println!("CACHE MISS for session {}, computing…", session_key);
+    info!("CACHE MISS for session {}, computing…", session_key);
 
     let laps_url = format!("https://api.openf1.org/v1/laps?session_key={}", session_key);
     let laps_resp = state.http_client.get(&laps_url).send().await.unwrap();
@@ -464,16 +465,16 @@ pub async fn get_sector_timings(
 
     if let Some(entry) = state.get_sector_timings_cache.get(&cache_key) {
         if !entry.is_expired() {
-            println!("CACHE HIT for session {} for sector timings", session_key);
+            info!("CACHE HIT for session {} for sector timings", session_key);
             return (StatusCode::OK, Json(entry.value.clone())).into_response();
         }
-        println!(
+        info!(
             "CACHE EXPIRED for session {} for sector timings recomputing…",
             session_key
         );
         state.get_sector_timings_cache.remove(&cache_key);
     }
-    println!(
+    info!(
         "CACHE MISS for session {} for sector timings, computing…",
         session_key
     );
