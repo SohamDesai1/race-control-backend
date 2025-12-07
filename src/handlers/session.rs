@@ -460,6 +460,23 @@ pub async fn get_sector_timings(
     State(state): State<Arc<AppState>>,
     Path(session_key): Path<String>,
 ) -> impl IntoResponse {
+    let cache_key = format!("session_sector_timings_{}", session_key);
+
+    if let Some(entry) = state.get_sector_timings_cache.get(&cache_key) {
+        if !entry.is_expired() {
+            println!("CACHE HIT for session {} for sector timings", session_key);
+            return (StatusCode::OK, Json(entry.value.clone())).into_response();
+        }
+        println!(
+            "CACHE EXPIRED for session {} for sector timings recomputing…",
+            session_key
+        );
+        state.get_sector_timings_cache.remove(&cache_key);
+    }
+    println!(
+        "CACHE MISS for session {} for sector timings, computing…",
+        session_key
+    );
     //  Get fastest lap from session_result
     let result_url = format!(
         "https://api.openf1.org/v1/session_result?session_key={}&position<=3",
@@ -547,6 +564,9 @@ pub async fn get_sector_timings(
     }
 
     response.sort_by_key(|r| r.position);
+    state
+        .get_sector_timings_cache
+        .insert(cache_key, CacheEntry::new(response.clone(), TTL_SECONDS));
 
     (StatusCode::OK, Json(response)).into_response()
 }

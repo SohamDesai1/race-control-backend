@@ -22,7 +22,7 @@ pub struct CarDataPoint {
     pub drs: Option<u32>,
 }
 
-#[derive(Serialize,Clone)]
+#[derive(Serialize, Clone)]
 pub struct SpeedDistance {
     pub speed: f64,
     pub distance: f64,
@@ -57,7 +57,7 @@ pub struct DriverLapGraph {
     pub data: Vec<LapPosition>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct FastestLapSector {
     pub position: u32,
     pub driver_number: u32,

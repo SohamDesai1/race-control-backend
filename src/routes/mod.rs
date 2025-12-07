@@ -18,7 +18,10 @@ pub use auth::auth_routes;
 
 use crate::{
     handlers::{middleware::auth_middleware, weather::get_weather},
-    models::{cache::CacheEntry, telemetry::{DriverLapGraph, SpeedDistance}},
+    models::{
+        cache::CacheEntry,
+        telemetry::{DriverLapGraph, FastestLapSector, SpeedDistance},
+    },
     routes::{race::race_routes, session::session_routes, standings::standings_routes},
     utils::{config::Config, state::AppState},
 };
@@ -39,10 +42,12 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
 
     let http_client = reqwest::Client::new();
     info!("External clients initialized successfully");
-    
+
     let fetch_driver_telemetry_cache: DashMap<String, CacheEntry<Vec<SpeedDistance>>> =
         DashMap::new();
     let get_drivers_position_telemetry_cache: DashMap<String, CacheEntry<Vec<DriverLapGraph>>> =
+        DashMap::new();
+    let get_sector_timings_cache: DashMap<String, CacheEntry<Vec<FastestLapSector>>> =
         DashMap::new();
 
     let state = Arc::new(AppState {
@@ -52,6 +57,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         http_client,
         fetch_driver_telemetry_cache,
         get_drivers_position_telemetry_cache,
+        get_sector_timings_cache,
     });
 
     let log_level = std::env::var("LOG_LEVEL")
