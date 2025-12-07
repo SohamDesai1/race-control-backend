@@ -2,7 +2,8 @@ use crate::{
     models::{
         cache::CacheEntry,
         telemetry::{
-            CarDataPoint, DriverLapGraph, FastestLapSector, Lap, LapPosition, LapRecord, LocationPoint, PacePoint, PaceQuery, PositionRecord, SpeedDistance, TelemetryQuery
+            CarDataPoint, DriverLapGraph, FastestLapSector, Lap, LapPosition, LapRecord,
+            LocationPoint, PacePoint, PaceQuery, PositionRecord, SpeedDistance, TelemetryQuery,
         },
     },
     utils::{race_utils::map_session_name, state::AppState},
@@ -710,18 +711,40 @@ pub fn compute_minisector_pace(a: Vec<(f64, f64, f64)>, b: Vec<(f64, f64, f64)>)
 pub async fn compare_race_pace(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PaceQuery>,
-) -> impl IntoResponse {
+) -> Json<Vec<PacePoint>> {
     let session = params.session_key.clone();
     let d1 = params.driver_1;
     let d2 = params.driver_2;
-
-    let (s1, dur1) = get_fastest_lap(&state.http_client, &session, d1).await.unwrap();
-    let (s2, dur2) = get_fastest_lap(&state.http_client, &session, d2).await.unwrap();
+    let cache_key = format!("race_pace_{}_{}_{}", session, d1, d2);
+    if let Some(entry) = state.get_race_pace_cache.get(&cache_key) {
+        if !entry.is_expired() {
+            info!("CACHE HIT for session {} for sector timings", session);
+            return Json(entry.value.clone());
+        }
+        info!(
+            "CACHE EXPIRED for session {} for sector timings recomputing…",
+            session
+        );
+        state.get_sector_timings_cache.remove(&cache_key);
+    }
+    info!(
+        "CACHE MISS for session {} for sector timings, computing…",
+        session
+    );
+    let (s1, dur1) = get_fastest_lap(&state.http_client, &session, d1)
+        .await
+        .unwrap();
+    let (s2, dur2) = get_fastest_lap(&state.http_client, &session, d2)
+        .await
+        .unwrap();
 
     let t1 = get_telemetry_with_distance(&state.http_client, &session, d1, &s1, dur1).await;
     let t2 = get_telemetry_with_distance(&state.http_client, &session, d2, &s2, dur2).await;
 
     let result = compute_minisector_pace(t1, t2);
+    state
+        .get_race_pace_cache
+        .insert(cache_key, CacheEntry::new(result.clone(), TTL_SECONDS));
 
     Json(result)
 }
