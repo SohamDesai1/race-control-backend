@@ -3,10 +3,11 @@ pub mod session;
 pub mod standings;
 pub mod users;
 use axum::{middleware::from_fn, response::IntoResponse, routing::get, Json, Router};
+use dashmap::DashMap;
 use http::StatusCode;
 use postgrest::Postgrest;
 use serde_json::json;
-use std::error::Error;
+use std::{error::Error, sync::Arc};
 use supabase_auth::models::AuthClient;
 use tower_http::trace::TraceLayer;
 use tracing::{info, Level};
@@ -17,6 +18,10 @@ pub use auth::auth_routes;
 
 use crate::{
     handlers::{middleware::auth_middleware, weather::get_weather},
+    models::{
+        cache::CacheEntry,
+        telemetry::{DriverLapGraph, FastestLapSector, PacePoint, SpeedDistance},
+    },
     routes::{race::race_routes, session::session_routes, standings::standings_routes},
     utils::{config::Config, state::AppState},
 };
@@ -28,7 +33,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
     info!("Configuration loaded successfully");
 
     let supabase = Postgrest::new(&format!("{}/rest/v1", &config.supabase_project_url))
-        .insert_header("apikey", &config.supabase_anon_key);
+        .insert_header("apikey", &config.supabase_service_role_key);
     let supabase_auth = AuthClient::new(
         &config.supabase_project_url,
         &config.supabase_anon_key,
@@ -38,12 +43,24 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
     let http_client = reqwest::Client::new();
     info!("External clients initialized successfully");
 
-    let state = AppState {
+    let fetch_driver_telemetry_cache: DashMap<String, CacheEntry<Vec<SpeedDistance>>> =
+        DashMap::new();
+    let get_drivers_position_telemetry_cache: DashMap<String, CacheEntry<Vec<DriverLapGraph>>> =
+        DashMap::new();
+    let get_sector_timings_cache: DashMap<String, CacheEntry<Vec<FastestLapSector>>> =
+        DashMap::new();
+    let get_race_pace_cache: DashMap<String, CacheEntry<Vec<PacePoint>>> = DashMap::new();
+
+    let state = Arc::new(AppState {
         supabase,
         supabase_auth,
         config,
         http_client,
-    };
+        fetch_driver_telemetry_cache,
+        get_drivers_position_telemetry_cache,
+        get_sector_timings_cache,
+        get_race_pace_cache,
+    });
 
     let log_level = std::env::var("LOG_LEVEL")
         .unwrap_or_else(|_| "info".to_string())
@@ -81,11 +98,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         .route(
             "/get_weather",
             get(get_weather).route_layer(from_fn(move |req, next| {
-                auth_middleware(
-                    axum::extract::State(std::sync::Arc::new(value.clone())),
-                    req,
-                    next,
-                )
+                auth_middleware(axum::extract::State(value.clone()), req, next)
             })),
         )
         .layer(TraceLayer::new_for_http())

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     models::user::User,
     utils::{hash_password::hash_password, state::AppState},
@@ -10,7 +12,7 @@ use axum::{
 };
 use serde_json::{from_str, json, Value};
 
-pub async fn get_users(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn get_users(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let response = state.supabase.from("Users").select("*").execute().await;
     match response {
         Ok(resp) => {
@@ -28,7 +30,7 @@ pub async fn get_users(State(state): State<AppState>) -> impl IntoResponse {
 
 pub async fn get_user_by_id(
     Path(id): Path<i32>,
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let response = state
         .supabase
@@ -52,7 +54,7 @@ pub async fn get_user_by_id(
 }
 
 pub async fn create_user(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<User>,
 ) -> impl IntoResponse {
     let hashed_password = hash_password(payload.password.unwrap().as_str());

@@ -14,12 +14,12 @@ tokio = { version = "1.45.0", features = ["full", "macros"] }
 argon2 = "0.5.3"
 password-hash = { version = "0.5.0", features = ["getrandom"] }
 jsonwebtoken = "9.3.1"
-chrono = "0.4.41"
+chrono = {version = "0.4.41", features = ["serde"]}
 async-trait = "0.1.88"
 axum-extra = { version = "0.10.1", features = ["typed-header"] }
 headers = "0.4.0"
 supabase-auth = "0.10.13"
-reqwest = "0.12.22"
+reqwest = { version = "0.12.22", features = ["json"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
 tower = "0.5.2"
@@ -29,3 +29,4 @@ tower-http = { version = "0.6.6", features = [
     "compression-full",
 ] }
 uuid = { version = "1.18.1", features = ["v4"] }
+dashmap = { version = "6.1.0", features = ["serde"] }

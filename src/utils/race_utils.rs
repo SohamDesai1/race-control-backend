@@ -1,10 +1,12 @@
 pub fn map_session_name(external: &str) -> Option<&'static str> {
-    match external {
+ match external {
         "Practice 1" => Some("FirstPractice"),
         "Practice 2" => Some("SecondPractice"),
         "Practice 3" => Some("ThirdPractice"),
         "Qualifying" => Some("Qualifying"),
-        "Race" => Some("Race"),
+        "Sprint Qualifying" => Some("SprintQualifying"),
+        "Sprint" => Some("Sprint"),
+        "Race" => Some("Race"), 
         _ => None,
     }
 }
