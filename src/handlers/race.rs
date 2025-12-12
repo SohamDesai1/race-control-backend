@@ -73,7 +73,7 @@ pub async fn get_upcoming_race_data(State(state): State<Arc<AppState>>) -> impl 
 
             if let Some(race_array) = races.as_array() {
                 if race_array.is_empty() {
-                    return (StatusCode::NOT_FOUND, Json(json!([]))).into_response();
+                    return (StatusCode::OK, Json(json!([]))).into_response();
                 }
 
                 let mut races_with_circuits = Vec::new();
