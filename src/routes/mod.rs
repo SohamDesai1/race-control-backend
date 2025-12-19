@@ -17,7 +17,7 @@ pub mod auth;
 pub use auth::auth_routes;
 
 use crate::{
-    handlers::{middleware::auth_middleware, weather::get_weather},
+    handlers::{middleware::auth_middleware, news::get_news, weather::get_weather},
     models::{
         cache::CacheEntry,
         telemetry::{DriverLapGraph, FastestLapSector, PacePoint, SpeedDistance},
@@ -87,7 +87,8 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
 
     Registry::default().with(tracing_layer).with(filter).init();
 
-    let value = state.clone();
+    let value1 = state.clone();
+    let value2 = state.clone();
     let app = Router::new()
         .route("/", get(health_check))
         .nest("/auth", auth_routes())
@@ -98,7 +99,13 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         .route(
             "/get_weather",
             get(get_weather).route_layer(from_fn(move |req, next| {
-                auth_middleware(axum::extract::State(value.clone()), req, next)
+                auth_middleware(axum::extract::State(value1.clone()), req, next)
+            })),
+        )
+        .route(
+            "/get_news",
+            get(get_news).route_layer(from_fn(move |req, next| {
+                auth_middleware(axum::extract::State(value2.clone()), req, next)
             })),
         )
         .layer(TraceLayer::new_for_http())
