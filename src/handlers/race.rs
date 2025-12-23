@@ -6,7 +6,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use chrono::Utc;
+use chrono::{Datelike, Utc};
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
 
@@ -119,78 +119,101 @@ pub async fn get_upcoming_race_data(State(state): State<Arc<AppState>>) -> impl 
     }
 }
 
-// pub async fn insert_race_and_circuit(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-//     let client = reqwest::Client::new();
-//     let res = client
-//         .get("https://api.jolpi.ca/ergast/f1/2025/races/?format=json")
-//         .send()
-//         .await
-//         .unwrap();
+pub async fn _insert_race_and_circuit(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let year = chrono::Utc::now().year().to_string();
+    let start = format!("{}-01-01", year);
+    let end = format!("{}-12-31", year);
+    println!("start: {}, end: {}", start, end);
+    let client = reqwest::Client::new();
+    let res = client
+        .get(format!("https://api.jolpi.ca/ergast/f1/{}/races/?format=json", year))
+        .send()
+        .await
+        .unwrap();
 
-//     let body = res.text().await.unwrap();
-//     let res: Value = from_str(&body).unwrap();
-//     let api_res_body = &res["MRData"]["RaceTable"]["Races"];
-//     let res = state
-//         .supabase
-//         .from("Races")
-//         .select("*")
-//         .execute()
-//         .await
-//         .unwrap();
-//     let res_body: Value = from_str(&res.text().await.unwrap()).unwrap();
-//     // let races = res_body.get("data").and_then(|d| d.as_array()).unwrap();
-//     let session_types = [
-//         "FirstPractice",
-//         "SecondPractice",
-//         "ThirdPractice",
-//         "SprintQualifying",
-//         "Sprint",
-//         "Qualifying",
-//         "Race",
-//     ];
-//     for api_race in api_res_body.as_array().unwrap() {
-//         let round = api_race["round"].as_str().unwrap_or_default();
+    let body = res.text().await.unwrap();
+    let res: Value = from_str(&body).unwrap();
+    let api_res_body = &res["MRData"]["RaceTable"]["Races"];
+    let res = state
+        .supabase
+        .from("Races")
+        .gte("date", start)
+        .lte("date", end)
+        .select("*")
+        .execute()
+        .await
+        .unwrap();
+    let res_body: Value = from_str(&res.text().await.unwrap()).unwrap();
+    let session_types = [
+        "FirstPractice",
+        "SecondPractice",
+        "ThirdPractice",
+        "SprintQualifying",
+        "Sprint",
+        "Qualifying",
+        "Race",
+    ];
+    for api_race in api_res_body.as_array().unwrap() {
+        let round = api_race["round"].as_str().unwrap_or_default();
 
-//         let db_race = res_body
-//             .as_array()
-//             .unwrap()
-//             .iter()
-//             .find(|r| r["round"].as_str() == Some(round));
-//         println!("db");
-//         if let Some(race) = db_race {
-//             println!("if let");
-//             let race_id = race["id"].as_i64().unwrap(); // Supabase ID
+        let db_race = res_body
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["round"].as_str() == Some(round));
+        println!("db");
+        if let Some(race) = db_race {
+            println!("if let");
+            let race_id = race["id"].as_i64().unwrap(); // Supabase ID
 
-//             for session_type in &session_types {
-//                 println!("session_type: {}", session_type);
-//                 if let Some(session) = api_race.get(*session_type) {
-//                     if let (Some(date), Some(time)) = (session.get("date"), session.get("time")) {
-//                         let body = json!({
-//                             "raceId": race_id,
-//                             "sessionType": session_type,
-//                             "date": date,
-//                             "time": time,
-//                         });
+            for session_type in &session_types {
+                println!("session_type: {}", session_type);
 
-//                         let result = state
-//                             .supabase
-//                             .from("Sessions")
-//                             .insert(body.to_string())
-//                             .execute()
-//                             .await;
+                let (date, time) = if *session_type == "Race" {
+                    // For Race session, get date and time from top-level race object
+                    (
+                        api_race.get("date").and_then(|v| v.as_str()),
+                        api_race.get("time").and_then(|v| v.as_str()),
+                    )
+                } else {
+                    // For other sessions, get from nested object
+                    if let Some(session) = api_race.get(*session_type) {
+                        (
+                            session.get("date").and_then(|v| v.as_str()),
+                            session.get("time").and_then(|v| v.as_str()),
+                        )
+                    } else {
+                        (None, None)
+                    }
+                };
 
-//                         match result {
-//                             Ok(_) => {
-//                                 println!("✅ Inserted {:?}", result.unwrap().text().await.unwrap())
-//                             }
-//                             Err(e) => eprintln!(
-//                                 "❌ Error inserting {session_type} for race {race_id}: {e:?}"
-//                             ),
-//                         }
-//                     }
-//                 }
-//             }
-//         }
-//     }
-//     (StatusCode::OK, Json(res_body.clone())).into_response()
-// }
+                if let (Some(date), Some(time)) = (date, time) {
+                    let body = json!({
+                        "raceId": race_id,
+                        "sessionType": session_type,
+                        "date": date,
+                        "time": time,
+                        "country": api_race["Circuit"]["Location"]["country"],
+                    });
+
+                    let result = state
+                        .supabase
+                        .from("SessionsTest")
+                        .insert(body.to_string())
+                        .execute()
+                        .await;
+
+                    match result {
+                        Ok(_) => {
+                            println!("✅ Inserted {:?}", result.unwrap().text().await.unwrap())
+                        }
+                        Err(e) => eprintln!(
+                            "❌ Error inserting {session_type} for race {race_id}: {e:?}"
+                        ),
+                    }
+                }
+            }
+        }
+    }
+    (StatusCode::OK, Json(res_body.clone())).into_response()
+}
