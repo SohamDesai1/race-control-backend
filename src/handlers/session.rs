@@ -13,21 +13,39 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, Utc};
 use http::StatusCode;
+use serde::Serialize;
 use serde_json::{from_str, json, Value};
 use std::{collections::HashMap, sync::Arc};
 use tracing::info;
 
+#[derive(serde::Deserialize, Serialize, Debug, Clone)]
+pub struct GetSession {
+    race_id: String,
+    year: Option<String>,
+}
+
 pub async fn get_sessions(
     State(state): State<Arc<AppState>>,
-    Path(race_id): Path<String>,
+    Query(params): Query<GetSession>,
 ) -> impl IntoResponse {
+    let year = params
+        .year
+        .clone()
+        .unwrap_or_else(|| chrono::Utc::now().year().to_string());
+    let start = format!("{}-01-01", year);
+    let end = format!("{}-12-31", year);
+
+    // Fetch sessions from database
     let res = state
         .supabase
         .from("Sessions")
+        .gte("date", &start)
+        .lte("date", &end)
+        .eq("raceId", &params.race_id)
         .select("*")
-        .eq("raceId", race_id.clone())
+        .order("id.asc")
         .execute()
         .await;
 
@@ -35,90 +53,154 @@ pub async fn get_sessions(
         Ok(result) => {
             let body = result.text().await.unwrap();
             let res_body: Value = from_str(&body).unwrap();
-            info!("RESS {:?}", res_body);
             let sessions_array = res_body.as_array().unwrap();
-            let all_have_session_keys = sessions_array.iter().all(|session| {
-                session.get("session_key").is_some()
-                    && !session.get("session_key").unwrap().is_null()
-            });
 
-            if all_have_session_keys && !sessions_array.is_empty() {
-                return (StatusCode::OK, Json(json!({"sessions":res_body}))).into_response();
-            } else {
-                info!("fallback");
-                let fallback_res = state
-                    .http_client
-                    .get(format!(
-                        "https://api.openf1.org/v1/sessions?country_name={}&year=2025",
-                        res_body[0]["country"].as_str().unwrap()
-                    ))
-                    .send()
-                    .await
-                    .unwrap();
-                let fallback_body = fallback_res.text().await.unwrap();
-                let fallback_sessions: Vec<Value> = from_str(&fallback_body).unwrap();
+            if sessions_array.is_empty() {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "No sessions found for this race" })),
+                )
+                    .into_response();
+            }
 
-                // Update all matching sessions
-                let mut updated_sessions = Vec::new();
-                let mut update_count = 0;
+            // Check which sessions are missing session_key
+            let sessions_without_keys: Vec<&Value> = sessions_array
+                .iter()
+                .filter(|session| {
+                    session.get("session_key").is_none()
+                        || session.get("session_key").unwrap().is_null()
+                })
+                .collect();
 
-                for session in fallback_sessions {
-                    if let Some(ext_name) = session.get("session_name").and_then(|v| v.as_str()) {
-                        if let Some(mapped_name) = map_session_name(ext_name) {
-                            if let (Some(session_key), Some(meeting_key)) = (
-                                session.get("session_key").and_then(|v| v.as_i64()),
-                                session.get("meeting_key").and_then(|v| v.as_i64()),
-                            ) {
-                                // Create proper update payload with actual values
-                                let update_payload = json!({
-                                    "session_key": session_key,
-                                    "meeting_key": meeting_key
+            // If all sessions have keys, return immediately
+            if sessions_without_keys.is_empty() {
+                return (
+                    StatusCode::OK,
+                    Json(json!({"sessions": res_body,"status": "completed"})),
+                )
+                    .into_response();
+            }
+
+            // If some sessions are missing keys, try to fetch from OpenF1
+            info!(
+                "Found {} sessions without keys, attempting to fetch from OpenF1",
+                sessions_without_keys.len()
+            );
+
+            // Get the date from the first session for date range query
+            let start_date = sessions_array[0]["date"].as_str().unwrap_or("");
+            let end_date = sessions_array
+                .last()
+                .and_then(|s| s["date"].as_str())
+                .unwrap_or("");
+            if start_date.is_empty() {
+                return (
+                    StatusCode::OK,
+                    Json(json!({
+                        "sessions": res_body,
+                        "status": "scheduled",
+                        "message": "Future Event, data not yet available"
+                    })),
+                )
+                    .into_response();
+            }
+
+            // Create date range query
+            let fallback_url = format!(
+                "https://api.openf1.org/v1/sessions?year={}&date_start>={}&date_end<={}",
+                year, start_date, end_date
+            );
+
+            info!("Fetching from OpenF1: {}", fallback_url);
+
+            let fallback_res = state.http_client.get(&fallback_url).send().await;
+
+            match fallback_res {
+                Ok(response) => {
+                    let fallback_body = response.text().await.unwrap();
+                    let fallback_sessions: Vec<Value> =
+                        from_str(&fallback_body).unwrap_or_default();
+
+                    if fallback_sessions.is_empty() {
+                        info!("No data available in OpenF1 yet, returning current sessions");
+                        return (
+                            StatusCode::OK,
+                            Json(json!({
+                                "sessions": res_body,
+                                "status": "scheduled",
+                                "message": "Future Event, data not yet available"
+                            })),
+                        )
+                            .into_response();
+                    }
+
+                    // Only update sessions that don't have session_key
+                    let mut updated_sessions = Vec::new();
+                    let mut update_count = 0;
+
+                    for session in fallback_sessions {
+                        if let Some(ext_name) = session.get("session_name").and_then(|v| v.as_str())
+                        {
+                            if let Some(mapped_name) = map_session_name(ext_name) {
+                                // Check if this session type is missing session_key in our DB
+                                let needs_update = sessions_without_keys.iter().any(|db_session| {
+                                    db_session
+                                        .get("sessionType")
+                                        .and_then(|v| v.as_str())
+                                        .map(|t| t == mapped_name)
+                                        .unwrap_or(false)
                                 });
 
-                                info!(
-                                    "Updating {} with payload: {:?}",
-                                    mapped_name, update_payload
-                                );
+                                if needs_update {
+                                    if let (Some(session_key), Some(meeting_key)) = (
+                                        session.get("session_key").and_then(|v| v.as_i64()),
+                                        session.get("meeting_key").and_then(|v| v.as_i64()),
+                                    ) {
+                                        let update_payload = json!({
+                                            "session_key": session_key,
+                                            "meeting_key": meeting_key
+                                        });
 
-                                let update_res = state
-                                    .supabase
-                                    .from("Sessions")
-                                    .eq("sessionType", mapped_name.to_string())
-                                    .eq("raceId", race_id.clone()) // Also filter by race_id
-                                    .update(&update_payload.to_string()) // Use actual payload
-                                    .execute()
-                                    .await;
+                                        info!(
+                                            "Updating {} with payload: {:?}",
+                                            mapped_name, update_payload
+                                        );
 
-                                if let Err(err) = update_res {
-                                    eprintln!(
-                                        "❌ Failed to update {} in Supabase: {:?}",
-                                        mapped_name, err
-                                    );
-                                    return (
-                                        StatusCode::INTERNAL_SERVER_ERROR,
-                                        Json(json!({ "error": format!("Database update failed for {}", mapped_name) })),
-                                    )
-                                    .into_response();
-                                } else {
-                                    updated_sessions.push(json!({
-                                        "session_type": mapped_name,
-                                        "session_key": session_key,
-                                        "meeting_key": meeting_key
-                                    }));
-                                    update_count += 1;
+                                        let update_res = state
+                                            .supabase
+                                            .from("Sessions")
+                                            .eq("sessionType", mapped_name.to_string())
+                                            .eq("raceId", params.race_id.clone())
+                                            .update(&update_payload.to_string())
+                                            .execute()
+                                            .await;
+
+                                        if let Err(err) = update_res {
+                                            eprintln!(
+                                                "❌ Failed to update {} in Supabase: {:?}",
+                                                mapped_name, err
+                                            );
+                                            // Don't return error, just log and continue
+                                        } else {
+                                            updated_sessions.push(json!({
+                                                "session_type": mapped_name,
+                                                "session_key": session_key,
+                                                "meeting_key": meeting_key
+                                            }));
+                                            update_count += 1;
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                if update_count > 0 {
-                    // Fetch updated data from database
+                    // Always fetch the latest data from database after attempting updates
                     let updated_res = state
                         .supabase
                         .from("Sessions")
                         .select("*")
-                        .eq("raceId", race_id.clone())
+                        .eq("raceId", params.race_id.clone())
                         .execute()
                         .await;
 
@@ -126,39 +208,68 @@ pub async fn get_sessions(
                         Ok(result) => {
                             let updated_body = result.text().await.unwrap();
                             let updated_sessions_data: Value = from_str(&updated_body).unwrap();
+                            let updated_array = updated_sessions_data.as_array().unwrap();
 
-                            let response = json!({
-                                "sessions": updated_sessions_data,
-                                "updated_count": update_count,
-                                "updated_sessions": updated_sessions
+                            // Check if all sessions now have keys
+                            let all_complete = updated_array.iter().all(|session| {
+                                session.get("session_key").is_some()
+                                    && !session.get("session_key").unwrap().is_null()
                             });
 
-                            return (StatusCode::CREATED, Json(response)).into_response();
+                            let status = if all_complete { "completed" } else { "partial" };
+
+                            let mut response = json!({
+                                "sessions": updated_sessions_data,
+                                "status": status,
+                            });
+
+                            if update_count > 0 {
+                                response["updated_count"] = json!(update_count);
+                                response["updated_sessions"] = json!(updated_sessions);
+                                response["message"] =
+                                    json!(format!("Updated {} session(s)", update_count));
+                            } else {
+                                response["message"] =
+                                    json!("Some sessions completed, others still scheduled");
+                            }
+
+                            return (StatusCode::OK, Json(response)).into_response();
                         }
                         Err(err) => {
                             eprintln!("Failed to fetch updated sessions: {:?}", err);
-                            let response = json!({
-                                "message": format!("Updated {} sessions successfully", update_count),
-                                "updated_sessions": updated_sessions
-                            });
-                            return (StatusCode::CREATED, Json(response)).into_response();
+                            // Return original data if refetch fails
+                            return (
+                                StatusCode::OK,
+                                Json(json!({
+                                    "sessions": res_body,
+                                    "status": "partial",
+                                    "message": "Some sessions updated but failed to refetch"
+                                })),
+                            )
+                                .into_response();
                         }
                     }
                 }
-
-                // If no matching session found
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({ "error": "No matching session found" })),
-                )
-                    .into_response();
+                Err(err) => {
+                    eprintln!("OpenF1 API request failed: {:?}", err);
+                    // Return whatever we have from DB
+                    return (
+                        StatusCode::OK,
+                        Json(json!({
+                            "sessions": res_body,
+                            "status": "partial",
+                            "message": "Some sessions may be completed, OpenF1 API unavailable"
+                        })),
+                    )
+                        .into_response();
+                }
             }
         }
         Err(err) => {
             eprintln!("Database query failed: {:?}", err);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "Failed to fetch session" })),
+                Json(json!({ "error": "Failed to fetch sessions from database" })),
             )
                 .into_response();
         }
