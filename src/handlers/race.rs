@@ -29,7 +29,7 @@ pub async fn get_race_results(
     (StatusCode::OK, Json(res_body)).into_response()
 }
 
-pub async fn get_race_data_db(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn get_all_races_data_db(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let res = state
         .supabase
         .from("Races")
@@ -37,7 +37,6 @@ pub async fn get_race_data_db(State(state): State<Arc<AppState>>) -> impl IntoRe
         .order("date.asc")
         .execute()
         .await;
-    // }
     match res {
         Ok(result) => {
             let body = result.text().await.unwrap();
@@ -53,6 +52,88 @@ pub async fn get_race_data_db(State(state): State<Arc<AppState>>) -> impl IntoRe
         }
     }
 }
+
+pub async fn get_race_data(
+    State(state): State<Arc<AppState>>,
+    Path((year, round)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let race = state
+        .supabase
+        .from("Races")
+        .eq("season", &year)
+        .eq("round", &round)
+        .select("*")
+        .execute()
+        .await;
+    // }
+    match race {
+        Ok(result) => {
+            let body = result.text().await.unwrap();
+            let result_res_body: Value = from_str(&body).unwrap();
+
+            let circuits = state
+                .supabase
+                .from("Circuits")
+                .eq(
+                    "circuitId",
+                    result_res_body[0]["circuitId"].as_str().unwrap_or_default(),
+                )
+                .select("*")
+                .execute()
+                .await;
+            match circuits {
+                Ok(circuits_result) => {
+                    let circuits_body = circuits_result.text().await.unwrap();
+                    let circuits_res_body: Value = from_str(&circuits_body).unwrap();
+
+                    let race_id = result_res_body[0]["id"]
+                        .as_i64()
+                        .or_else(|| result_res_body[0]["id"].as_u64().map(|v| v as i64))
+                        .unwrap_or(0);
+
+                    let sessions = state
+                        .supabase
+                        .from("Sessions")
+                        .eq("raceId", &race_id.to_string())
+                        .select("*")
+                        .execute()
+                        .await;
+
+                    match sessions {
+                        Ok(sessions_result) => {
+                            let sessions_body = sessions_result.text().await.unwrap();
+                            let sessions_res_body: Value = from_str(&sessions_body).unwrap();
+
+                            return (StatusCode::OK, Json(json!({"race":result_res_body, "circuit":circuits_res_body, "sessions":sessions_res_body}))).into_response();
+                        }
+                        Err(_) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "Failed to fetch sessions".to_string(),
+                            )
+                                .into_response()
+                        }
+                    }
+                }
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to fetch circuits".to_string(),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch races".to_string(),
+            )
+                .into_response()
+        }
+    }
+}
+
 pub async fn get_upcoming_race_data(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let today = Utc::now().date_naive().format("%Y-%m-%d").to_string();
 
@@ -126,7 +207,10 @@ pub async fn _insert_race_and_circuit(State(state): State<Arc<AppState>>) -> imp
     println!("start: {}, end: {}", start, end);
     let client = reqwest::Client::new();
     let res = client
-        .get(format!("https://api.jolpi.ca/ergast/f1/{}/races/?format=json", year))
+        .get(format!(
+            "https://api.jolpi.ca/ergast/f1/{}/races/?format=json",
+            year
+        ))
         .send()
         .await
         .unwrap();
@@ -207,9 +291,9 @@ pub async fn _insert_race_and_circuit(State(state): State<Arc<AppState>>) -> imp
                         Ok(_) => {
                             println!("✅ Inserted {:?}", result.unwrap().text().await.unwrap())
                         }
-                        Err(e) => eprintln!(
-                            "❌ Error inserting {session_type} for race {race_id}: {e:?}"
-                        ),
+                        Err(e) => {
+                            eprintln!("❌ Error inserting {session_type} for race {race_id}: {e:?}")
+                        }
                     }
                 }
             }
