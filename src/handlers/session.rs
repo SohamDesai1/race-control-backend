@@ -19,7 +19,6 @@ use serde_json::{from_str, json, Value};
 use std::{collections::HashMap, sync::Arc};
 use tracing::info;
 
-
 pub async fn get_sessions(
     State(state): State<Arc<AppState>>,
     Path((race_id, year)): Path<(String, Option<String>)>,
@@ -273,12 +272,10 @@ pub async fn get_session_data(
     State(state): State<Arc<AppState>>,
     Path(session_key): Path<String>,
 ) -> impl IntoResponse {
-    let mut latest_laps: HashMap<String, Value> = HashMap::new();
-
     let res = state
         .http_client
         .get(format!(
-            "https://api.openf1.org/v1/laps?session_key={session_key}"
+            "https://api.openf1.org/v1/session_result?session_key={session_key}"
         ))
         .send()
         .await
@@ -287,33 +284,6 @@ pub async fn get_session_data(
     let body = res.text().await.unwrap();
     let res: Value = from_str(&body).unwrap();
 
-    for lap in res.as_array().unwrap() {
-        let driver_number = lap["driver_number"].to_string();
-
-        let Some(date_str) = lap["date_start"].as_str() else {
-            continue;
-        };
-
-        let Ok(date) = DateTime::parse_from_rfc3339(date_str) else {
-            continue;
-        };
-
-        let date = date.with_timezone(&Utc);
-        latest_laps
-            .entry(driver_number)
-            .and_modify(|existing| {
-                let existing_date_str = existing["date_start"].as_str().unwrap();
-                let existing_date = DateTime::parse_from_rfc3339(existing_date_str)
-                    .unwrap()
-                    .with_timezone(&Utc);
-
-                if date > existing_date {
-                    *existing = lap.clone();
-                }
-            })
-            .or_insert(lap.clone());
-    }
-    let res: Vec<Value> = latest_laps.into_values().collect();
     return (StatusCode::OK, Json(res)).into_response();
 }
 
