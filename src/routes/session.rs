@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 pub fn session_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let session_router = Router::new()
-        .route("/get_sessions/", get(get_sessions))
+        .route("/get_sessions/{race_id}/{year}", get(get_sessions))
         .route("/get_session_data/{session_key}", get(get_session_data))
         .route("/fetch_driver_telemetry", get(fetch_driver_telemetry))
         .route(

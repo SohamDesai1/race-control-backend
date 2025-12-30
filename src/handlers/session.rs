@@ -15,23 +15,16 @@ use axum::{
 };
 use chrono::{DateTime, Datelike, Duration, Utc};
 use http::StatusCode;
-use serde::Serialize;
 use serde_json::{from_str, json, Value};
 use std::{collections::HashMap, sync::Arc};
 use tracing::info;
 
-#[derive(serde::Deserialize, Serialize, Debug, Clone)]
-pub struct GetSession {
-    race_id: String,
-    year: Option<String>,
-}
 
 pub async fn get_sessions(
     State(state): State<Arc<AppState>>,
-    Query(params): Query<GetSession>,
+    Path((race_id, year)): Path<(String, Option<String>)>,
 ) -> impl IntoResponse {
-    let year = params
-        .year
+    let year = year
         .clone()
         .unwrap_or_else(|| chrono::Utc::now().year().to_string());
     let start = format!("{}-01-01", year);
@@ -43,7 +36,7 @@ pub async fn get_sessions(
         .from("Sessions")
         .gte("date", &start)
         .lte("date", &end)
-        .eq("raceId", &params.race_id)
+        .eq("raceId", &race_id)
         .select("*")
         .order("id.asc")
         .execute()
@@ -170,7 +163,7 @@ pub async fn get_sessions(
                                             .supabase
                                             .from("Sessions")
                                             .eq("sessionType", mapped_name.to_string())
-                                            .eq("raceId", params.race_id.clone())
+                                            .eq("raceId", race_id.clone())
                                             .update(&update_payload.to_string())
                                             .execute()
                                             .await;
@@ -200,7 +193,7 @@ pub async fn get_sessions(
                         .supabase
                         .from("Sessions")
                         .select("*")
-                        .eq("raceId", params.race_id.clone())
+                        .eq("raceId", race_id.clone())
                         .execute()
                         .await;
 
@@ -339,7 +332,10 @@ pub async fn fetch_driver_telemetry(
 ) -> impl IntoResponse {
     let session_key = params.session_key.clone();
     let driver_number = params.driver_number.clone();
-    let cache_key = format!("session_drivers_position_graph_{}", session_key);
+    let cache_key = format!(
+        "session_drivers_telemetry_graph_{}_{}",
+        session_key, driver_number
+    );
     if let Some(entry) = state.fetch_driver_telemetry_cache.get(&cache_key) {
         if !entry.is_expired() {
             info!(
