@@ -3,7 +3,7 @@ use crate::{
         cache::CacheEntry,
         telemetry::{
             CarDataPoint, DriverLapGraph, FastestLapSector, Lap, LapPosition, LapRecord,
-            LocationPoint, PacePoint, PaceQuery, PositionRecord, SpeedDistance, TelemetryQuery,
+            LocationPoint, PacePoint, PaceQuery, PositionRecord, SpeedDistance,
         },
     },
     utils::{race_utils::map_session_name, state::AppState},
@@ -298,10 +298,10 @@ const TTL_SECONDS: i64 = 60 * 60;
 
 pub async fn fetch_driver_telemetry(
     State(state): State<Arc<AppState>>,
-    Query(params): Query<TelemetryQuery>,
+    Path((session_key, driver_number)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let session_key = params.session_key.clone();
-    let driver_number = params.driver_number.clone();
+    let session_key = session_key.clone();
+    let driver_number = driver_number.clone();
     let cache_key = format!(
         "session_drivers_telemetry_graph_{}_{}",
         session_key, driver_number

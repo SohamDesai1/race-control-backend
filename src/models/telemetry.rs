@@ -1,12 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize)]
-pub struct TelemetryQuery {
-    pub session_key: String,
-    pub driver_number: String,
-}
-
 #[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct CarDataPoint {
