@@ -17,7 +17,7 @@ use chrono::{DateTime, Datelike, Duration, Utc};
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
 use std::{collections::HashMap, sync::Arc};
-use tracing::info;
+use tracing::{info, warn};
 
 pub async fn get_sessions(
     State(state): State<Arc<AppState>>,
@@ -555,7 +555,8 @@ pub async fn get_sector_timings(
         "CACHE MISS for session {} for sector timings, computing…",
         session_key
     );
-    //  Get fastest lap from session_result
+
+    // ✅ Get top 3 drivers from session_result
     let result_url = format!(
         "https://api.openf1.org/v1/session_result?session_key={}&position<=3",
         session_key
@@ -563,7 +564,8 @@ pub async fn get_sector_timings(
 
     let result_body = match state.http_client.get(result_url).send().await {
         Ok(r) => r.text().await.unwrap(),
-        Err(_) => {
+        Err(e) => {
+            warn!("{:?}", e);
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({ "error": "Failed to fetch session_result" })),
@@ -573,24 +575,26 @@ pub async fn get_sector_timings(
     };
 
     let session_results: Vec<Value> = serde_json::from_str(&result_body).unwrap_or_default();
+
     let mut response = Vec::new();
 
-    // ✅ STEP 2: Process each top-3 driver
-    for driver in session_results {
-        let position = driver["position"].as_u64().unwrap() as u32;
-        let driver_number = driver["driver_number"].as_u64().unwrap() as u32;
-
-        // ✅ Fastest lap = last value from duration array
-        let fastest_lap = match driver["duration"]
-            .as_array()
-            .and_then(|d| d.last())
-            .and_then(|v| v.as_f64())
-        {
-            Some(v) => v,
-            None => continue,
+    // ✅ Process each top-3 driver
+    for (_idx, driver) in session_results.iter().enumerate() {
+        let position = match driver["position"].as_u64() {
+            Some(p) => p as u32,
+            None => {
+                continue;
+            }
         };
 
-        // ✅ STEP 3: Fetch laps for that driver
+        let driver_number = match driver["driver_number"].as_u64() {
+            Some(d) => d as u32,
+            None => {
+                continue;
+            }
+        };
+
+        // ✅ Fetch all laps for this driver
         let laps_url = format!(
             "https://api.openf1.org/v1/laps?session_key={}&driver_number={}",
             session_key, driver_number
@@ -598,22 +602,27 @@ pub async fn get_sector_timings(
 
         let laps_body = match state.http_client.get(laps_url).send().await {
             Ok(r) => r.text().await.unwrap(),
-            Err(_) => continue,
+            Err(_) => {
+                continue;
+            }
         };
 
         let laps: Vec<Value> = serde_json::from_str(&laps_body).unwrap_or_default();
 
-        // ✅ STEP 4: Match fastest lap from laps API
-        let matching_lap = laps.iter().find(|lap| {
-            lap.get("lap_duration")
-                .and_then(|v| v.as_f64())
-                .map(|d| (d - fastest_lap).abs() < 0.001)
-                .unwrap_or(false)
-        });
+        let fastest_lap_data = laps
+            .iter()
+            .filter_map(|lap| {
+                lap.get("lap_duration")
+                    .and_then(|v| v.as_f64())
+                    .map(|duration| (lap, duration))
+            })
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let lap = match matching_lap {
-            Some(l) => l,
-            None => continue,
+        let (lap, fastest_lap) = match fastest_lap_data {
+            Some((l, d)) => (l, d),
+            None => {
+                continue;
+            }
         };
 
         let sector_1 = lap
@@ -631,14 +640,15 @@ pub async fn get_sector_timings(
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
 
-        response.push(FastestLapSector {
+        let entry = FastestLapSector {
             position,
             driver_number,
             fastest_lap,
             sector_1,
             sector_2,
             sector_3,
-        });
+        };
+        response.push(entry);
     }
 
     response.sort_by_key(|r| r.position);
