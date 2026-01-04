@@ -20,7 +20,9 @@ use crate::{
     handlers::{middleware::auth_middleware, news::get_news, weather::get_weather},
     models::{
         cache::CacheEntry,
-        telemetry::{DriverLapGraph, FastestLapSector, PacePoint, SpeedDistance},
+        telemetry::{
+            DriverLapGraph, FastestLapSector, PacePoint, QualifyingRankings, SpeedDistance,
+        },
     },
     routes::{race::race_routes, session::session_routes, standings::standings_routes},
     utils::{config::Config, state::AppState},
@@ -50,6 +52,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
     let get_sector_timings_cache: DashMap<String, CacheEntry<Vec<FastestLapSector>>> =
         DashMap::new();
     let get_race_pace_cache: DashMap<String, CacheEntry<Vec<PacePoint>>> = DashMap::new();
+    let quali_session_cache: DashMap<String, CacheEntry<QualifyingRankings>> = DashMap::new();
 
     let state = Arc::new(AppState {
         supabase,
@@ -60,6 +63,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         get_drivers_position_telemetry_cache,
         get_sector_timings_cache,
         get_race_pace_cache,
+        quali_session_cache,
     });
 
     let log_level = std::env::var("LOG_LEVEL")

@@ -3,7 +3,7 @@ use crate::{
         middleware::auth_middleware,
         session::{
             compare_race_pace, fetch_driver_telemetry, get_drivers_position_telemetry,
-            get_sector_timings, get_session_data, get_sessions,
+            get_quali_session_data, get_sector_timings, get_session_data, get_sessions,
         },
     },
     utils::state::AppState,
@@ -15,7 +15,14 @@ pub fn session_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let session_router = Router::new()
         .route("/get_sessions/{race_id}/{year}", get(get_sessions))
         .route("/get_session_data/{session_key}", get(get_session_data))
-        .route("/fetch_driver_telemetry/{session_key}/{driver_number}", get(fetch_driver_telemetry))
+        .route(
+            "/get_quali_session_data/{year}/{round}",
+            get(get_quali_session_data),
+        )
+        .route(
+            "/fetch_driver_telemetry/{session_key}/{driver_number}",
+            get(fetch_driver_telemetry),
+        )
         .route(
             "/get_drivers_position_telemetry/{session_key}",
             get(get_drivers_position_telemetry),

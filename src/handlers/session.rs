@@ -3,7 +3,8 @@ use crate::{
         cache::CacheEntry,
         telemetry::{
             CarDataPoint, DriverLapGraph, FastestLapSector, Lap, LapPosition, LapRecord,
-            LocationPoint, PacePoint, PaceQuery, PositionRecord, SpeedDistance,
+            LocationPoint, PacePoint, PaceQuery, PositionRecord, QualifyingRanking,
+            QualifyingRankings, SpeedDistance,
         },
     },
     utils::{race_utils::map_session_name, state::AppState},
@@ -16,6 +17,7 @@ use axum::{
 use chrono::{DateTime, Datelike, Duration, Utc};
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
+use std::cmp::Ordering::{Equal, Greater, Less};
 use std::{collections::HashMap, sync::Arc};
 use tracing::{info, warn};
 
@@ -285,6 +287,209 @@ pub async fn get_session_data(
     let res: Value = from_str(&body).unwrap();
 
     return (StatusCode::OK, Json(res)).into_response();
+}
+
+fn _parse_lap_time(time_str: &str) -> Option<f64> {
+    if time_str.is_empty() {
+        return None;
+    }
+
+    let parts: Vec<&str> = time_str.split(':').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    let minutes: f64 = parts[0].parse().ok()?;
+    let seconds: f64 = parts[1].parse().ok()?;
+
+    Some(minutes * 60.0 + ((seconds * 100.0).round() / 100.0))
+}
+
+pub async fn get_quali_session_data(
+    State(state): State<Arc<AppState>>,
+    Path((year, round)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let cache_key = format!("quali_session_{}_{}", year, round);
+    if let Some(entry) = state.quali_session_cache.get(&cache_key) {
+        if !entry.is_expired() {
+            info!("CACHE HIT for qual session {} round {}", year, round);
+            return (StatusCode::OK, Json(entry.value.clone())).into_response();
+        }
+        info!(
+            "CACHE EXPIRED for for qual session {} round {}, recomputing…",
+            year, round
+        );
+        state.quali_session_cache.remove(&cache_key);
+    }
+    let res = state
+        .http_client
+        .get(format!(
+            "https://api.jolpi.ca/ergast/f1/{}/{}/qualifying?format=json",
+            year, round
+        ))
+        .send()
+        .await;
+
+    match res {
+        Ok(res) => {
+            let body: String = res.text().await.unwrap();
+            let res_body: Value = from_str(&body).unwrap();
+
+            let qualifying_results = match res_body["MRData"]["RaceTable"]["Races"]
+                .as_array()
+                .and_then(|races| races.first())
+                .and_then(|race| race["QualifyingResults"].as_array())
+            {
+                Some(results) => results,
+                None => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({ "error": "No qualifying results found" })),
+                    )
+                        .into_response();
+                }
+            };
+
+            let mut q1_rankings = Vec::new();
+            let mut q2_rankings = Vec::new();
+            let mut q3_rankings = Vec::new();
+
+            // Collect all times for each session
+            for result in qualifying_results {
+                let driver_number = result["number"].as_str().unwrap_or("").to_string();
+                let driver_code = result["Driver"]["code"].as_str().unwrap_or("").to_string();
+                let driver_name = format!(
+                    "{} {}",
+                    result["Driver"]["givenName"].as_str().unwrap_or(""),
+                    result["Driver"]["familyName"].as_str().unwrap_or("")
+                );
+                let constructor = result["Constructor"]["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+
+                if let Some(q1_time) = result["Q1"].as_str() {
+                    if !q1_time.is_empty() {
+                        q1_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: driver_number.clone(),
+                            driver_code: driver_code.clone(),
+                            driver_name: driver_name.clone(),
+                            constructor: constructor.clone(),
+                            time: q1_time.to_string(),
+                            time_seconds: _parse_lap_time(q1_time),
+                        });
+                    } else {
+                        q1_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: driver_number.clone(),
+                            driver_code: driver_code.clone(),
+                            driver_name: driver_name.clone(),
+                            constructor: constructor.clone(),
+                            time: "".to_string(),
+                            time_seconds: None,
+                        });
+                    }
+                }
+
+                if let Some(q2_time) = result["Q2"].as_str() {
+                    if !q2_time.is_empty() {
+                        q2_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: driver_number.clone(),
+                            driver_code: driver_code.clone(),
+                            driver_name: driver_name.clone(),
+                            constructor: constructor.clone(),
+                            time: q2_time.to_string(),
+                            time_seconds: _parse_lap_time(q2_time),
+                        });
+                    } else {
+                        q2_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: driver_number.clone(),
+                            driver_code: driver_code.clone(),
+                            driver_name: driver_name.clone(),
+                            constructor: constructor.clone(),
+                            time: "".to_string(),
+                            time_seconds: None,
+                        });
+                    }
+                }
+
+                if let Some(q3_time) = result["Q3"].as_str() {
+                    if !q3_time.is_empty() {
+                        q3_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: driver_number.clone(),
+                            driver_code: driver_code.clone(),
+                            driver_name: driver_name.clone(),
+                            constructor: constructor.clone(),
+                            time: q3_time.to_string(),
+                            time_seconds: _parse_lap_time(q3_time),
+                        });
+                    } else {
+                        q3_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: driver_number.clone(),
+                            driver_code: driver_code.clone(),
+                            driver_name: driver_name.clone(),
+                            constructor: constructor.clone(),
+                            time: "".to_string(),
+                            time_seconds: None,
+                        });
+                    }
+                }
+            }
+
+            q1_rankings.sort_by(|a, b| match (a.time_seconds, b.time_seconds) {
+                (Some(time_a), Some(time_b)) => time_a.partial_cmp(&time_b).unwrap_or(Equal),
+                (Some(_), None) => Less,
+                (None, Some(_)) => Greater,
+                (None, None) => Equal,
+            });
+            for (i, ranking) in q1_rankings.iter_mut().enumerate() {
+                ranking.position = (i + 1) as u32;
+            }
+
+            q2_rankings.sort_by(|a, b| match (a.time_seconds, b.time_seconds) {
+                (Some(time_a), Some(time_b)) => time_a.partial_cmp(&time_b).unwrap_or(Equal),
+                (Some(_), None) => Less,
+                (None, Some(_)) => Greater,
+                (None, None) => Equal,
+            });
+            for (i, ranking) in q2_rankings.iter_mut().enumerate() {
+                ranking.position = (i + 1) as u32;
+            }
+
+            q3_rankings.sort_by(|a, b| match (a.time_seconds, b.time_seconds) {
+                (Some(time_a), Some(time_b)) => time_a.partial_cmp(&time_b).unwrap_or(Equal),
+                (Some(_), None) => Less,
+                (None, Some(_)) => Greater,
+                (None, None) => Equal,
+            });
+            for (i, ranking) in q3_rankings.iter_mut().enumerate() {
+                ranking.position = (i + 1) as u32;
+            }
+
+            let rankings = QualifyingRankings {
+                q1: q1_rankings,
+                q2: q2_rankings,
+                q3: q3_rankings,
+            };
+            state
+                .quali_session_cache
+                .insert(cache_key, CacheEntry::new(rankings.clone(), TTL_SECONDS));
+            return (StatusCode::OK, Json(rankings)).into_response();
+        }
+        Err(e) => {
+            warn!("Failed to fetch qualifying data: {:?}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "Failed to fetch qualifying data" })),
+            )
+                .into_response();
+        }
+    }
 }
 
 // Helper to parse RFC3339 date string to chrono::DateTime<Utc>

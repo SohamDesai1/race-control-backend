@@ -87,5 +87,23 @@ pub struct PacePoint {
     pub x: f64,
     pub y: f64,
     pub minisector: u32,
-    pub fastest_driver: u32, 
+    pub fastest_driver: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QualifyingRanking {
+    pub position: u32,
+    pub driver_number: String,
+    pub driver_code: String,
+    pub driver_name: String,
+    pub constructor: String,
+    pub time: String,
+    pub time_seconds: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QualifyingRankings {
+    pub q1: Vec<QualifyingRanking>,
+    pub q2: Vec<QualifyingRanking>,
+    pub q3: Vec<QualifyingRanking>,
 }
