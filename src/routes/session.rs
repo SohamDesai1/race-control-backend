@@ -4,6 +4,7 @@ use crate::{
         session::{
             compare_race_pace, fetch_driver_telemetry, get_drivers_position_telemetry,
             get_quali_session_data, get_sector_timings, get_session_data, get_sessions,
+            get_sprint_quali_session_data,
         },
     },
     utils::state::AppState,
@@ -28,6 +29,7 @@ pub fn session_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(get_drivers_position_telemetry),
         )
         .route("/get_sector_timings/{session_key}", get(get_sector_timings))
+        .route("/get_sprint_quali_session_data/{session_key}", get(get_sprint_quali_session_data))
         .route("/compare_race_pace", get(compare_race_pace))
         .with_state(state.clone());
 

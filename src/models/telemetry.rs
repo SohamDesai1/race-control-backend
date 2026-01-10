@@ -93,11 +93,16 @@ pub struct PacePoint {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QualifyingRanking {
     pub position: u32,
-    pub driver_number: String,
-    pub driver_code: String,
-    pub driver_name: String,
-    pub constructor: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driver_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driver_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driver_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub constructor: Option<String>,
     pub time: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub time_seconds: Option<f64>,
 }
 

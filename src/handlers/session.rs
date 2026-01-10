@@ -372,20 +372,20 @@ pub async fn get_quali_session_data(
                     if !q1_time.is_empty() {
                         q1_rankings.push(QualifyingRanking {
                             position: 0,
-                            driver_number: driver_number.clone(),
-                            driver_code: driver_code.clone(),
-                            driver_name: driver_name.clone(),
-                            constructor: constructor.clone(),
+                            driver_number: Some(driver_number.clone()),
+                            driver_code: Some(driver_code.clone()),
+                            driver_name: Some(driver_name.clone()),
+                            constructor: Some(constructor.clone()),
                             time: q1_time.to_string(),
                             time_seconds: _parse_lap_time(q1_time),
                         });
                     } else {
                         q1_rankings.push(QualifyingRanking {
                             position: 0,
-                            driver_number: driver_number.clone(),
-                            driver_code: driver_code.clone(),
-                            driver_name: driver_name.clone(),
-                            constructor: constructor.clone(),
+                            driver_number: Some(driver_number.clone()),
+                            driver_code: Some(driver_code.clone()),
+                            driver_name: Some(driver_name.clone()),
+                            constructor: Some(constructor.clone()),
                             time: "".to_string(),
                             time_seconds: None,
                         });
@@ -396,20 +396,20 @@ pub async fn get_quali_session_data(
                     if !q2_time.is_empty() {
                         q2_rankings.push(QualifyingRanking {
                             position: 0,
-                            driver_number: driver_number.clone(),
-                            driver_code: driver_code.clone(),
-                            driver_name: driver_name.clone(),
-                            constructor: constructor.clone(),
+                            driver_number: Some(driver_number.clone()),
+                            driver_code: Some(driver_code.clone()),
+                            driver_name: Some(driver_name.clone()),
+                            constructor: Some(constructor.clone()),
                             time: q2_time.to_string(),
                             time_seconds: _parse_lap_time(q2_time),
                         });
                     } else {
                         q2_rankings.push(QualifyingRanking {
                             position: 0,
-                            driver_number: driver_number.clone(),
-                            driver_code: driver_code.clone(),
-                            driver_name: driver_name.clone(),
-                            constructor: constructor.clone(),
+                            driver_number: Some(driver_number.clone()),
+                            driver_code: Some(driver_code.clone()),
+                            driver_name: Some(driver_name.clone()),
+                            constructor: Some(constructor.clone()),
                             time: "".to_string(),
                             time_seconds: None,
                         });
@@ -420,20 +420,20 @@ pub async fn get_quali_session_data(
                     if !q3_time.is_empty() {
                         q3_rankings.push(QualifyingRanking {
                             position: 0,
-                            driver_number: driver_number.clone(),
-                            driver_code: driver_code.clone(),
-                            driver_name: driver_name.clone(),
-                            constructor: constructor.clone(),
+                            driver_number: Some(driver_number.clone()),
+                            driver_code: Some(driver_code.clone()),
+                            driver_name: Some(driver_name.clone()),
+                            constructor: Some(constructor.clone()),
                             time: q3_time.to_string(),
                             time_seconds: _parse_lap_time(q3_time),
                         });
                     } else {
                         q3_rankings.push(QualifyingRanking {
                             position: 0,
-                            driver_number: driver_number.clone(),
-                            driver_code: driver_code.clone(),
-                            driver_name: driver_name.clone(),
-                            constructor: constructor.clone(),
+                            driver_number: Some(driver_number.clone()),
+                            driver_code: Some(driver_code.clone()),
+                            driver_name: Some(driver_name.clone()),
+                            constructor: Some(constructor.clone()),
                             time: "".to_string(),
                             time_seconds: None,
                         });
@@ -492,6 +492,185 @@ pub async fn get_quali_session_data(
     }
 }
 
+pub async fn get_sprint_quali_session_data(
+    State(state): State<Arc<AppState>>,
+    Path(session_key): Path<String>,
+) -> impl IntoResponse {
+    let res = state
+        .http_client
+        .get(format!(
+            "https://api.openf1.org/v1/session_result?session_key={session_key}"
+        ))
+        .send()
+        .await;
+
+    match res {
+        Ok(response) => {
+            let body: String = response.text().await.unwrap();
+            let res_body: Value = from_str(&body).unwrap();
+
+            // Extract meeting_key from the first result to fetch driver info
+            let meeting_key = res_body
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|first| first["meeting_key"].as_u64())
+                .map(|k| k as u32);
+
+            if meeting_key.is_none() {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "No meeting key found in session results" })),
+                )
+                    .into_response();
+            }
+
+            let _meeting_key = meeting_key.unwrap();
+
+            let mut q1_rankings = Vec::new();
+            let mut q2_rankings = Vec::new();
+            let mut q3_rankings = Vec::new();
+
+            // Process each driver's qualifying result
+            if let Some(results_array) = res_body.as_array() {
+                for result in results_array {
+                    let driver_number = result["driver_number"].as_u64().unwrap_or(0) as u32;
+                    let _position = result["position"].as_u64().unwrap_or(0) as u32;
+
+                    // Get driver info from our mapping
+
+                    // Extract Q1, Q2, Q3 times from duration array
+                    let duration_array = result["duration"].as_array();
+                    let gap_array = result["gap_to_leader"].as_array();
+
+                    // Process Q1
+                    if let (Some(durations), Some(_gaps)) = (duration_array, gap_array) {
+                        if let Some(q1_duration) = durations.get(0) {
+                            if let Some(q1_time) = q1_duration.as_f64() {
+                                q1_rankings.push(QualifyingRanking {
+                                    position: 0, // Will be set after sorting
+                                    driver_number: Some(driver_number.to_string()),
+                                    time: format!("{:.3}", q1_time),
+                                    time_seconds: Some(q1_time),
+                                    driver_code: None,
+                                    driver_name: None,
+                                    constructor: None,
+                                });
+                            } else {
+                                q1_rankings.push(QualifyingRanking {
+                                    position: 0,
+                                    driver_number: Some(driver_number.to_string()),
+                                    time: "".to_string(),
+                                    time_seconds: None,
+                                    driver_code: None,
+                                    driver_name: None,
+                                    constructor: None,
+                                });
+                            }
+                        }
+
+                        // Process Q2
+                        if let Some(q2_duration) = durations.get(1) {
+                            if let Some(q2_time) = q2_duration.as_f64() {
+                                q2_rankings.push(QualifyingRanking {
+                                    position: 0,
+                                    driver_number: Some(driver_number.to_string()),
+                                    time: format!("{:.3}", q2_time),
+                                    time_seconds: Some(q2_time),
+                                    driver_code: None,
+                                    driver_name: None,
+                                    constructor: None,
+                                });
+                            } else {
+                                q2_rankings.push(QualifyingRanking {
+                                    position: 0,
+                                    driver_number: Some(driver_number.to_string()),
+
+                                    time: "".to_string(),
+                                    time_seconds: None,
+                                    driver_code: None,
+                                    driver_name: None,
+                                    constructor: None,
+                                });
+                            }
+                        }
+
+                        // Process Q3
+                        if let Some(q3_duration) = durations.get(2) {
+                            if let Some(q3_time) = q3_duration.as_f64() {
+                                q3_rankings.push(QualifyingRanking {
+                                    position: 0,
+                                    driver_number: Some(driver_number.to_string()),
+                                    time: format!("{:.3}", q3_time),
+                                    time_seconds: Some(q3_time),
+                                    driver_code: None,
+                                    driver_name: None,
+                                    constructor: None,
+                                });
+                            } else {
+                                q3_rankings.push(QualifyingRanking {
+                                    position: 0,
+                                    driver_number: Some(driver_number.to_string()),
+                                    time: "".to_string(),
+                                    time_seconds: None,
+                                    driver_code: None,
+                                    driver_name: None,
+                                    constructor: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Sort and assign positions for each session
+            q1_rankings.sort_by(|a, b| match (a.time_seconds, b.time_seconds) {
+                (Some(time_a), Some(time_b)) => time_a.partial_cmp(&time_b).unwrap_or(Equal),
+                (Some(_), None) => Less,
+                (None, Some(_)) => Greater,
+                (None, None) => Equal,
+            });
+            for (i, ranking) in q1_rankings.iter_mut().enumerate() {
+                ranking.position = (i + 1) as u32;
+            }
+
+            q2_rankings.sort_by(|a, b| match (a.time_seconds, b.time_seconds) {
+                (Some(time_a), Some(time_b)) => time_a.partial_cmp(&time_b).unwrap_or(Equal),
+                (Some(_), None) => Less,
+                (None, Some(_)) => Greater,
+                (None, None) => Equal,
+            });
+            for (i, ranking) in q2_rankings.iter_mut().enumerate() {
+                ranking.position = (i + 1) as u32;
+            }
+
+            q3_rankings.sort_by(|a, b| match (a.time_seconds, b.time_seconds) {
+                (Some(time_a), Some(time_b)) => time_a.partial_cmp(&time_b).unwrap_or(Equal),
+                (Some(_), None) => Less,
+                (None, Some(_)) => Greater,
+                (None, None) => Equal,
+            });
+            for (i, ranking) in q3_rankings.iter_mut().enumerate() {
+                ranking.position = (i + 1) as u32;
+            }
+
+            let rankings = QualifyingRankings {
+                q1: q1_rankings,
+                q2: q2_rankings,
+                q3: q3_rankings,
+            };
+
+            return (StatusCode::OK, Json(rankings)).into_response();
+        }
+        Err(e) => {
+            warn!("Failed to fetch qualifying data: {:?}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "Failed to fetch qualifying data" })),
+            )
+                .into_response();
+        }
+    }
+}
 // Helper to parse RFC3339 date string to chrono::DateTime<Utc>
 fn _parse_date(date: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(date)
