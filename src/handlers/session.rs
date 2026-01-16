@@ -1181,9 +1181,10 @@ pub fn compute_minisector_pace(a: Vec<(f64, f64, f64)>, b: Vec<(f64, f64, f64)>)
 
 pub async fn compare_race_pace(
     State(state): State<Arc<AppState>>,
+    Path(session_key): Path<String>,
     Query(params): Query<PaceQuery>,
 ) -> Json<Vec<PacePoint>> {
-    let session = params.session_key.clone();
+    let session = session_key.clone();
     let d1 = params.driver_1;
     let d2 = params.driver_2;
     let cache_key = format!("race_pace_{}_{}_{}", session, d1, d2);

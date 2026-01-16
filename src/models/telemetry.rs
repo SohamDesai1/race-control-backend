@@ -63,7 +63,6 @@ pub struct FastestLapSector {
 
 #[derive(Deserialize)]
 pub struct PaceQuery {
-    pub session_key: String,
     pub driver_1: u32,
     pub driver_2: u32,
 }

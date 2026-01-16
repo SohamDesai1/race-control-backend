@@ -30,7 +30,7 @@ pub fn session_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/get_sector_timings/{session_key}", get(get_sector_timings))
         .route("/get_sprint_quali_session_data/{session_key}", get(get_sprint_quali_session_data))
-        .route("/compare_race_pace", get(compare_race_pace))
+        .route("/compare_race_pace/{session_key}", get(compare_race_pace))
         .with_state(state.clone());
 
     session_router.layer(from_fn(move |req, next| {
