@@ -305,6 +305,8 @@ fn _parse_lap_time(time_str: &str) -> Option<f64> {
     Some(minutes * 60.0 + ((seconds * 100.0).round() / 100.0))
 }
 
+const TTL_SECONDS: i64 = 60 * 60;
+
 pub async fn get_quali_session_data(
     State(state): State<Arc<AppState>>,
     Path((year, round)): Path<(String, String)>,
@@ -319,6 +321,7 @@ pub async fn get_quali_session_data(
             "CACHE EXPIRED for for qual session {} round {}, recomputing…",
             year, round
         );
+        drop(entry);
         state.quali_session_cache.remove(&cache_key);
     }
     let res = state
@@ -678,8 +681,6 @@ fn _parse_date(date: &str) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-const TTL_SECONDS: i64 = 60 * 60;
-
 pub async fn fetch_driver_telemetry(
     State(state): State<Arc<AppState>>,
     Path((session_key, driver_number)): Path<(i32, i32)>,
@@ -702,6 +703,7 @@ pub async fn fetch_driver_telemetry(
             "CACHE EXPIRED for session {} driver {}, recomputing…",
             session_key, driver_number
         );
+        drop(entry);
         state.fetch_driver_telemetry_cache.remove(&cache_key);
     }
     // 1. Get latest lap for driver
@@ -823,6 +825,7 @@ pub async fn get_drivers_position_telemetry(
             return Json(entry.value.clone());
         }
         info!("CACHE EXPIRED for session {}, recomputing…", session_key);
+        drop(entry);
         state
             .get_drivers_position_telemetry_cache
             .remove(&cache_key);
@@ -933,6 +936,7 @@ pub async fn get_sector_timings(
             "CACHE EXPIRED for session {} for sector timings recomputing…",
             session_key
         );
+        drop(entry);
         state.get_sector_timings_cache.remove(&cache_key);
     }
     info!(
@@ -1197,6 +1201,7 @@ pub async fn compare_race_pace(
             "CACHE EXPIRED for session {} for sector timings recomputing…",
             session
         );
+        drop(entry);
         state.get_sector_timings_cache.remove(&cache_key);
     }
     info!(
