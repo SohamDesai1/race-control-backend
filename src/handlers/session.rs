@@ -15,9 +15,13 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Datelike, Duration, Utc};
+use core::time;
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
-use std::cmp::Ordering::{Equal, Greater, Less};
+use std::{
+    cmp::Ordering::{Equal, Greater, Less},
+    thread,
+};
 use std::{collections::HashMap, sync::Arc};
 use tracing::{info, warn};
 
@@ -1211,11 +1215,13 @@ pub async fn compare_race_pace(
     let (s1, dur1) = get_fastest_lap(&state.http_client, &session, d1)
         .await
         .unwrap();
+    thread::sleep(time::Duration::from_secs(1));
     let (s2, dur2) = get_fastest_lap(&state.http_client, &session, d2)
         .await
         .unwrap();
 
     let t1 = get_telemetry_with_distance(&state.http_client, &session, d1, &s1, dur1).await;
+    thread::sleep(time::Duration::from_secs(1));
     let t2 = get_telemetry_with_distance(&state.http_client, &session, d2, &s2, dur2).await;
 
     let result = compute_minisector_pace(t1, t2);
