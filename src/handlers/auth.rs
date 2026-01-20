@@ -1,11 +1,17 @@
 use std::sync::Arc;
 
 use crate::{
-    models::user::User,
-    utils::{hash_password::hash_password, state::AppState},
+    models::{jwt::RefreshClaims, user::User},
+    utils::{
+        hash_password::hash_password,
+        jwt_encode::{jwt_encode, refresh_token_encode},
+        state::AppState,
+    },
 };
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{extract::State, response::IntoResponse, Json};
 use http::StatusCode;
+use jsonwebtoken::{DecodingKey, Validation};
 use serde_json::{from_str, json, Value};
 
 pub async fn register(
@@ -30,82 +36,10 @@ pub async fn register(
                 "hashed_password": hashed,
                 "auth_provider": "email"
             });
-            let session = state
-                .supabase_auth
-                .sign_up_with_email_and_password(
-                    &payload.email.clone(),
-                    &payload.password.unwrap(),
-                    None,
-                )
-                .await;
-            match session {
-                Ok(user) => {
-                    let response = state
-                        .supabase
-                        .from("Users")
-                        .insert(body.to_string())
-                        .execute()
-                        .await;
-
-                    match response {
-                        Ok(resp) => {
-                            let body = resp.text().await.unwrap();
-                            let json_body: Value = from_str(&body).unwrap();
-
-                            match user {
-                                supabase_auth::models::EmailSignUpResult::SessionResult(
-                                    session,
-                                ) => (
-                                    StatusCode::CREATED,
-                                    Json(json!({
-                                        "message": "User registered",
-                                        "data": {
-                                            "access_token": session.access_token,
-                                            "user": json_body
-                                        }
-                                    })),
-                                ),
-                                supabase_auth::models::EmailSignUpResult::ConfirmationResult(
-                                    _,
-                                ) => (
-                                    StatusCode::CREATED,
-                                    Json(json!({"message": "User registered", "data": json_body})),
-                                ),
-                            }
-                            .into_response()
-                        }
-                        Err(_) => (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(json!({"error": "Failed to insert user into database"})),
-                        )
-                            .into_response(),
-                    }
-                }
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": e.to_string()})),
-                )
-                    .into_response(),
-            }
-        }
-        Err(e) => (StatusCode::CONFLICT, Json(json!({"error": e}))).into_response(),
-    }
-}
-
-pub async fn login(State(state): State<Arc<AppState>>, Json(payload): Json<User>) -> impl IntoResponse {
-    let email = payload.email.clone();
-    let password = payload.password.unwrap_or_default();
-    let session = state
-        .supabase_auth
-        .login_with_email(&email, &password)
-        .await;
-    match session {
-        Ok(user) => {
             let response = state
                 .supabase
                 .from("Users")
-                .eq("email", email)
-                .select("*")
+                .insert(body.to_string())
                 .execute()
                 .await;
 
@@ -113,32 +47,74 @@ pub async fn login(State(state): State<Arc<AppState>>, Json(payload): Json<User>
                 Ok(resp) => {
                     let body = resp.text().await.unwrap();
                     let json_body: Value = from_str(&body).unwrap();
-                    // let stored_hash = json_body[0]["hashed_password"].as_str().unwrap_or("");
-                    // let parsed_hash = PasswordHash::new(stored_hash).unwrap();
-                    // let argon2 = Argon2::default();
 
-                    // if argon2
-                    //     .verify_password(password.as_bytes(), &parsed_hash)
-                    //     .is_ok()
-                    // {
                     (
-                    StatusCode::OK,
-                    Json(json!({"message": "Login successful", "data": {"user":json_body,"acces_token": user.access_token,"refresh_token": user.refresh_token}})),
-                )
-                    .into_response()
-                    // } else {
-                    //     (
-                    //         StatusCode::UNAUTHORIZED,
-                    //         Json(json!({"error": "Invalid credentials"})),
-                    //     )
-                    //         .into_response()
-                    // }
+                        StatusCode::CREATED,
+                        Json(json!({
+                            "message": "User registered",
+                            "data": {
+                                "user": json_body
+                            }
+                        })),
+                    )
+                        .into_response()
                 }
                 Err(_) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "User lookup failed"})),
+                    Json(json!({"error": "Failed to insert user into database"})),
                 )
                     .into_response(),
+            }
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn login(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<User>,
+) -> impl IntoResponse {
+    let email = payload.email.clone();
+    let password = payload.password.unwrap_or_default();
+
+    let response = state
+        .supabase
+        .from("Users")
+        .eq("email", email)
+        .select("*")
+        .execute()
+        .await;
+
+    match response {
+        Ok(resp) => {
+            let body = resp.text().await.unwrap();
+            let json_body: Value = from_str(&body).unwrap();
+            let stored_hash = json_body[0]["hashed_password"].as_str().unwrap_or("");
+            let parsed_hash = PasswordHash::new(stored_hash).unwrap();
+            let argon2 = Argon2::default();
+
+            if argon2
+                .verify_password(password.as_bytes(), &parsed_hash)
+                .is_ok()
+            {
+                let token = jwt_encode(payload.email.clone(), state.config.jwt_secret.as_ref());
+                let refresh_token =
+                    refresh_token_encode(payload.email, state.config.jwt_secret.as_ref());
+                (
+                    StatusCode::OK,
+                    Json(json!({"message": "Login successful", "data": {"user":json_body,"access_token": token, "refresh_token": refresh_token}})),
+                )
+                    .into_response()
+            } else {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"error": "Invalid credentials"})),
+                )
+                    .into_response()
             }
         }
         Err(_) => (
@@ -221,23 +197,36 @@ pub async fn refresh_token_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<User>,
 ) -> impl IntoResponse {
-    let refresh_token = payload.refresh_token.unwrap_or_default();
+    let token_data: Result<jsonwebtoken::TokenData<RefreshClaims>, jsonwebtoken::errors::Error> =
+        jsonwebtoken::decode::<RefreshClaims>(
+            &payload.refresh_token.unwrap_or_default(),
+            &DecodingKey::from_secret(state.config.jwt_secret.as_bytes()),
+            &Validation::default(),
+        );
 
-    let session = state
-        .supabase_auth
-        .exchange_token_for_session( &refresh_token)
-        .await;
+    let claims = match token_data {
+        Ok(data) => data.claims,
+        Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "Invalid refresh token"})),
+            )
+                .into_response();
+        }
+    };
 
-    match session {
-        Ok(user) => (
-            StatusCode::OK,
-            Json(json!({"message": "Token refreshed", "data": {"access_token": user.access_token, "refresh_token": user.refresh_token}})),
-        )
-            .into_response(),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to refresh token"})),
-        )
-            .into_response(),
-    }
+    let new_access_token = jwt_encode(claims.sub.clone(), state.config.jwt_secret.as_ref());
+    let new_refresh_token = refresh_token_encode(claims.sub, state.config.jwt_secret.as_ref());
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "message": "Token refreshed",
+            "data": {
+                "access_token": new_access_token,
+                "refresh_token": new_refresh_token
+            }
+        })),
+    )
+        .into_response()
 }
