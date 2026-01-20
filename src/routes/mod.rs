@@ -8,7 +8,6 @@ use http::StatusCode;
 use postgrest::Postgrest;
 use serde_json::json;
 use std::{error::Error, sync::Arc};
-use supabase_auth::models::AuthClient;
 use tower_http::trace::TraceLayer;
 use tracing::{info, Level};
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, Registry};
@@ -34,11 +33,6 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
 
     let supabase = Postgrest::new(&format!("{}/rest/v1", &config.supabase_project_url))
         .insert_header("apikey", &config.supabase_service_role_key);
-    let supabase_auth = AuthClient::new(
-        &config.supabase_project_url,
-        &config.supabase_anon_key,
-        &config.supabase_service_role_key,
-    );
 
     let http_client = reqwest::Client::new();
     info!("External clients initialized successfully");
@@ -53,7 +47,6 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
 
     let state = Arc::new(AppState {
         supabase,
-        supabase_auth,
         config,
         http_client,
         fetch_driver_telemetry_cache,
