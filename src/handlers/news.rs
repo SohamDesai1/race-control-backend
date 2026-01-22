@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::utils::state::AppState;
+use crate::{models::news::NewsCache, utils::state::AppState};
 use axum::{extract::State, response::IntoResponse, Json};
 use http::StatusCode;
 use serde_json::{json, Value};
@@ -8,98 +8,109 @@ use serde_json::{json, Value};
 pub async fn get_news(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let ttl_hours = 6;
 
-    let cached = state
-        .supabase
-        .from("NewsCache")
-        .select("*")
-        .order("created_at.desc")
-        .limit(10)
-        .execute()
-        .await;
+    // Check cache first
+    let cached = sqlx::query_as::<_, NewsCache>(
+        r#"SELECT * FROM "NewsCache" ORDER BY created_at DESC LIMIT 10"#,
+    )
+    .fetch_all(&state.db_pool)
+    .await;
 
-    if let Ok(res) = cached {
-        let body = res.text().await.unwrap();
-        let cached_news: Vec<Value> = serde_json::from_str(&body).unwrap();
-
+    if let Ok(cached_news) = cached {
         if let Some(latest) = cached_news.first() {
-            if let Some(created_at) = latest["created_at"].as_str() {
-                let created = chrono::DateTime::parse_from_rfc3339(created_at)
-                    .unwrap()
-                    .with_timezone(&chrono::Utc);
-
-                if chrono::Utc::now() - created < chrono::Duration::hours(ttl_hours) {
-                    return (
-                        StatusCode::OK,
-                        Json(json!({ "source": "cache", "articles": cached_news })),
-                    )
-                        .into_response();
-                }
+            let age = chrono::Utc::now().signed_duration_since(latest.created_at);
+            if age < chrono::Duration::hours(ttl_hours) {
+                return (
+                    StatusCode::OK,
+                    Json(json!({ "source": "cache", "articles": cached_news })),
+                )
+                    .into_response();
             }
         }
     }
 
+    // Fetch fresh news
     let days_ago = chrono::Utc::now() - chrono::Duration::days(14);
-    let rfc_date = days_ago.to_rfc3339();
-    let since = rfc_date.split("T").next().unwrap_or("");
+    let since = days_ago.format("%Y-%m-%d").to_string();
 
     let mut collected = Vec::new();
 
-    let res1 = state
+    // Fetch from NewsAPI
+    match state
         .http_client
         .get(format!(
             "https://newsapi.org/v2/everything?q=F1 OR Formula1&language=en&from={}",
             since
         ))
         .header("User-Agent", "F1FantasyApp/1.0")
-        .header("X-Api-Key", std::env::var("NEWS1").expect("NEWS1 not set"))
+        .header("X-Api-Key", std::env::var("NEWS1").unwrap_or_default())
         .send()
         .await
-        .unwrap();
-
-    let json1: Value = serde_json::from_str(&res1.text().await.unwrap()).unwrap();
-
-    if let Some(article) = json1["articles"].get(0) {
-        collected.push(json!({
-            "source": "newsapi",
-            "title": article["title"],
-            "description": article["description"],
-            "url": article["url"],
-            "image": article["urlToImage"],
-            "published_at": article["publishedAt"]
-        }));
+    {
+        Ok(res) => {
+            if let Ok(text) = res.text().await {
+                if let Ok(json1) = serde_json::from_str::<Value>(&text) {
+                    if let Some(article) = json1["articles"].get(0) {
+                        collected.push(json!({
+                            "source": "newsapi",
+                            "title": article["title"],
+                            "description": article["description"],
+                            "url": article["url"],
+                            "image": article["urlToImage"],
+                            "published_at": article["publishedAt"]
+                        }));
+                    }
+                }
+            }
+        }
+        Err(e) => tracing::warn!("Failed to fetch from NewsAPI: {:?}", e),
     }
 
-    let res2 = state
+    // Fetch from WorldNewsAPI
+    match state
         .http_client
         .get(format!(
             "https://api.worldnewsapi.com/search-news?text=Formula1&language=en&earliest-publish-date={}",
             since
         ))
-        .header("x-api-key", std::env::var("NEWS2").expect("NEWS2 not set"))
+        .header("x-api-key", std::env::var("NEWS2").unwrap_or_default())
         .send()
         .await
-        .unwrap();
-
-    let json2: Value = serde_json::from_str(&res2.text().await.unwrap()).unwrap();
-
-    if let Some(article) = json2["news"].get(0) {
-        collected.push(json!({
-            "source": "worldnewsapi",
-            "title": article["title"],
-            "description": article["summary"],
-            "url": article["url"],
-            "image": article["image"],
-            "published_at": article["publish_date"]
-        }));
+    {
+        Ok(res) => {
+            if let Ok(text) = res.text().await {
+                if let Ok(json2) = serde_json::from_str::<Value>(&text) {
+                    if let Some(article) = json2["news"].get(0) {
+                        collected.push(json!({
+                            "source": "worldnewsapi",
+                            "title": article["title"],
+                            "description": article["summary"],
+                            "url": article["url"],
+                            "image": article["image"],
+                            "published_at": article["publish_date"]
+                        }));
+                    }
+                }
+            }
+        }
+        Err(e) => tracing::warn!("Failed to fetch from WorldNewsAPI: {:?}", e),
     }
 
+    // Cache the results
     for item in &collected {
-        let _ = state
-            .supabase
-            .from("NewsCache")
-            .insert(item.to_string())
-            .execute()
-            .await;
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO "NewsCache" (source, title, description, url, image, published_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(item["source"].as_str().unwrap_or(""))
+        .bind(item["title"].as_str().unwrap_or(""))
+        .bind(item["description"].as_str())
+        .bind(item["url"].as_str().unwrap_or(""))
+        .bind(item["image"].as_str())
+        .bind(item["published_at"].as_str())
+        .execute(&state.db_pool)
+        .await;
     }
 
     (
