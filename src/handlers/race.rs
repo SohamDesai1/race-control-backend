@@ -9,7 +9,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use chrono::{Datelike, Utc};
+use chrono::Datelike;
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
 
@@ -51,25 +51,31 @@ pub async fn get_race_data_db(State(state): State<Arc<AppState>>) -> impl IntoRe
 }
 
 pub async fn get_upcoming_race_data(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let today = Utc::now().date_naive().format("%Y-%m-%d").to_string();
+    let today = chrono::Utc::now().date_naive();
 
     // Fetch all upcoming races with circuit data using a JOIN
     let res = sqlx::query_as::<_, RaceWithCircuit>(
         r#"
-        SELECT 
-            r.id,
-            r.race_id,
-            r.circuit_id,
-            r.date,
-            r.name,
-            c.name as circuit_name,
-            c.location,
-            c.country
-        FROM "Races" r
-        LEFT JOIN "Circuits" c ON r.circuit_id = c.circuit_id
-        WHERE r.date >= $1
-        ORDER BY r.date ASC
-        "#,
+    SELECT
+        r.id,
+        r."created_at",
+        r."season",
+        r."round",
+        r."date",
+        r."time",
+        r."raceName"   AS race_name,
+        r."circuitId"  AS circuit_id,
+        c."circuitName"       AS circuit_name,
+        c."locality",
+        c."country",
+        c."lat",
+        c."long"
+    FROM "Races" r
+    LEFT JOIN "Circuits" c
+      ON r."circuitId" = c."circuitId"
+    WHERE r."date" >= $1
+    ORDER BY r."date" ASC
+    "#,
     )
     .bind(&today)
     .fetch_all(&state.db_pool)
