@@ -1,9 +1,11 @@
 use crate::{
     models::{
-        cache::CacheEntry, session::Session, telemetry::{
+        cache::CacheEntry,
+        session::Session,
+        telemetry::{
             CarDataPoint, DriverLapGraph, FastestLapSector, Lap, LapPosition, LapRecord,
             LocationPoint, PacePoint, PaceQuery, PositionRecord, SpeedDistance, TelemetryQuery,
-        }
+        },
     },
     utils::{race_utils::map_session_name, state::AppState},
 };
@@ -12,7 +14,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use chrono::{DateTime, Datelike, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use http::StatusCode;
 use serde::Serialize;
 use serde_json::{from_str, json, Value};
@@ -21,8 +23,8 @@ use tracing::info;
 
 #[derive(serde::Deserialize, Serialize, Debug, Clone)]
 pub struct GetSession {
-    race_id: String,
-    year: Option<String>,
+    race_id: i32,
+    year: Option<i32>,
 }
 
 pub async fn get_sessions(
@@ -32,20 +34,30 @@ pub async fn get_sessions(
     let year = params
         .year
         .clone()
-        .unwrap_or_else(|| chrono::Utc::now().year().to_string());
-    let start = format!("{}-01-01", year);
-    let end = format!("{}-12-31", year);
+        .unwrap_or_else(|| chrono::Utc::now().year());
+    let start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap();
 
     // Fetch sessions from database
     let res = sqlx::query_as::<_, Session>(
         r#"
-        SELECT * FROM "Sessions"
-        WHERE date >= $1 AND date <= $2 AND race_id = $3
-        ORDER BY id ASC
-        "#,
+    SELECT
+    id,
+    "raceId",
+    "sessionType",
+    "date",
+    "time",
+    "session_key",
+    "meeting_key"
+    FROM "Sessions"
+    WHERE "date" >= $1
+    AND "date" <= $2
+    AND "raceId" = $3
+    ORDER BY id ASC
+    "#,
     )
-    .bind(&start)
-    .bind(&end)
+    .bind(start)
+    .bind(end)
     .bind(&params.race_id)
     .fetch_all(&state.db_pool)
     .await;
@@ -82,20 +94,25 @@ pub async fn get_sessions(
             );
 
             // Get the date from the first session for date range query
-            let start_date = &sessions[0].date;
-            let end_date = sessions.last().map(|s| s.date.as_str()).unwrap_or("");
+            let start_date = match sessions.first().and_then(|s| s.date) {
+                Some(d) => d,
+                None => {
+                    return (
+                        StatusCode::OK,
+                        Json(json!({
+                            "sessions": sessions,
+                            "status": "scheduled",
+                            "message": "Future Event, data not yet available"
+                        })),
+                    )
+                        .into_response();
+                }
+            };
 
-            if start_date.is_empty() {
-                return (
-                    StatusCode::OK,
-                    Json(json!({
-                        "sessions": sessions,
-                        "status": "scheduled",
-                        "message": "Future Event, data not yet available"
-                    })),
-                )
-                    .into_response();
-            }
+            let end_date = match sessions.last().and_then(|s| s.date) {
+                Some(d) => d,
+                None => start_date,
+            };
 
             // Create date range query
             let fallback_url = format!(
@@ -152,8 +169,8 @@ pub async fn get_sessions(
                                         let update_res = sqlx::query(
                                             r#"
                                             UPDATE "Sessions"
-                                            SET session_key = $1, meeting_key = $2
-                                            WHERE session_type = $3 AND race_id = $4
+                                            SET "session_key" = $1, "meeting_key" = $2
+                                            WHERE "sessionType" = $3 AND "raceId" = $4
                                             "#,
                                         )
                                         .bind(session_key)
@@ -185,7 +202,7 @@ pub async fn get_sessions(
 
                     // Always fetch the latest data from database after attempting updates
                     let updated_res = sqlx::query_as::<_, Session>(
-                        r#"SELECT * FROM "Sessions" WHERE race_id = $1 ORDER BY id ASC"#,
+                        r#"SELECT * FROM "Sessions" WHERE "raceId" = $1 ORDER BY id ASC"#,
                     )
                     .bind(&params.race_id)
                     .fetch_all(&state.db_pool)
