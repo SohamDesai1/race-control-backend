@@ -5,10 +5,9 @@ pub mod users;
 use axum::{middleware::from_fn, response::IntoResponse, routing::get, Json, Router};
 use dashmap::DashMap;
 use http::StatusCode;
-use postgrest::Postgrest;
 use serde_json::json;
-use std::{error::Error, sync::Arc};
-use supabase_auth::models::AuthClient;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use std::{error::Error, str::FromStr, sync::Arc};
 use tower_http::trace::TraceLayer;
 use tracing::{info, Level};
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, Registry};
@@ -29,43 +28,6 @@ use crate::{
 };
 
 pub async fn make_app() -> Result<Router, Box<dyn Error>> {
-    info!("Initializing application...");
-    let config = Config::init();
-
-    info!("Configuration loaded successfully");
-
-    let supabase = Postgrest::new(&format!("{}/rest/v1", &config.supabase_project_url))
-        .insert_header("apikey", &config.supabase_service_role_key);
-    let supabase_auth = AuthClient::new(
-        &config.supabase_project_url,
-        &config.supabase_anon_key,
-        &config.supabase_service_role_key,
-    );
-
-    let http_client = reqwest::Client::new();
-    info!("External clients initialized successfully");
-
-    let fetch_driver_telemetry_cache: DashMap<String, CacheEntry<Vec<SpeedDistance>>> =
-        DashMap::new();
-    let get_drivers_position_telemetry_cache: DashMap<String, CacheEntry<Vec<DriverLapGraph>>> =
-        DashMap::new();
-    let get_sector_timings_cache: DashMap<String, CacheEntry<Vec<FastestLapSector>>> =
-        DashMap::new();
-    let get_race_pace_cache: DashMap<String, CacheEntry<Vec<PacePoint>>> = DashMap::new();
-    let quali_session_cache: DashMap<String, CacheEntry<QualifyingRankings>> = DashMap::new();
-
-    let state = Arc::new(AppState {
-        supabase,
-        supabase_auth,
-        config,
-        http_client,
-        fetch_driver_telemetry_cache,
-        get_drivers_position_telemetry_cache,
-        get_sector_timings_cache,
-        get_race_pace_cache,
-        quali_session_cache,
-    });
-
     let log_level = std::env::var("LOG_LEVEL")
         .unwrap_or_else(|_| "info".to_string())
         .to_lowercase();
@@ -90,6 +52,44 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
     let tracing_layer = tracing_subscriber::fmt::layer();
 
     Registry::default().with(tracing_layer).with(filter).init();
+
+    info!("Initializing application...");
+    let config = Config::init();
+
+    info!("Configuration loaded successfully");
+    let connect_options = PgConnectOptions::from_str(&config.db_url)?.statement_cache_capacity(0);
+    // Create database connection pool
+    let db_pool = PgPoolOptions::new()
+        .max_connections(5)
+        .min_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .idle_timeout(Some(std::time::Duration::from_secs(60)))
+        .connect_with(connect_options)
+        .await?;
+
+    info!("Database connection pool created successfully");
+    let http_client = reqwest::Client::new();
+    info!("External clients initialized successfully");
+
+    let fetch_driver_telemetry_cache: DashMap<String, CacheEntry<Vec<SpeedDistance>>> =
+        DashMap::new();
+    let get_drivers_position_telemetry_cache: DashMap<String, CacheEntry<Vec<DriverLapGraph>>> =
+        DashMap::new();
+    let get_sector_timings_cache: DashMap<String, CacheEntry<Vec<FastestLapSector>>> =
+        DashMap::new();
+    let get_race_pace_cache: DashMap<String, CacheEntry<Vec<PacePoint>>> = DashMap::new();
+    let quali_session_cache: DashMap<String, CacheEntry<QualifyingRankings>> = DashMap::new();
+
+    let state = Arc::new(AppState {
+        db_pool,
+        config,
+        http_client,
+        fetch_driver_telemetry_cache,
+        get_drivers_position_telemetry_cache,
+        get_sector_timings_cache,
+        get_race_pace_cache,
+        quali_session_cache
+    });
 
     let value1 = state.clone();
     let value2 = state.clone();

@@ -1,3 +1,4 @@
+// In your state.rs file
 use crate::{
     models::{
         cache::CacheEntry,
@@ -8,14 +9,12 @@ use crate::{
     utils::config::Config,
 };
 use dashmap::DashMap;
-use postgrest::Postgrest;
 use reqwest::Client;
-use supabase_auth::models::AuthClient;
+use sqlx::PgPool;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub supabase: Postgrest,
-    pub supabase_auth: AuthClient,
+    pub db_pool: PgPool,
     pub config: Config,
     pub http_client: Client,
     pub fetch_driver_telemetry_cache: DashMap<String, CacheEntry<Vec<SpeedDistance>>>,

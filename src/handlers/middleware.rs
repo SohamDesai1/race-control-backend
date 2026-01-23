@@ -4,7 +4,7 @@ use axum::{
     response::IntoResponse,
 };
 use http::{header, StatusCode};
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{decode, DecodingKey, Validation};
 use std::sync::Arc;
 
 use crate::{
@@ -13,7 +13,7 @@ use crate::{
 };
 
 pub async fn auth_middleware(
-    State(state): State<Arc<AppState>>, 
+    State(state): State<Arc<AppState>>,
     mut req: Request,
     next: Next,
 ) -> Result<impl IntoResponse, Error> {
@@ -22,29 +22,19 @@ pub async fn auth_middleware(
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "))
-        .ok_or((StatusCode::UNAUTHORIZED, "Missing Bearer token"))?;
+        .ok_or_else(|| Error::new(StatusCode::UNAUTHORIZED, "Missing authorization header"))?;
 
-    let jwk_x = state.config.jwk_x.clone();
-    let jwk_y = state.config.jwk_y.clone();
+    let secret = &state.config.jwt_secret;
 
-    let decoding_key = DecodingKey::from_ec_components(&jwk_x, &jwk_y).map_err(|e| {
-        Error::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("Invalid JWK: {}", e),
-        )
-    })?;
+    let claims = decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &Validation::default(),
+    )
+    .map(|data| data.claims)
+    .map_err(|e| Error::new(StatusCode::UNAUTHORIZED, &format!("Invalid token: {}", e)))?;
 
-    let mut validation = Validation::new(Algorithm::ES256);
-    validation.set_audience(&["authenticated"]);
-
-    let decoded = decode::<Claims>(token, &decoding_key, &validation).map_err(|e| {
-        Error::new(
-            StatusCode::UNAUTHORIZED,
-            &format!("Token validation failed: {}", e),
-        )
-    })?;
-
-    req.extensions_mut().insert(decoded.claims);
+    req.extensions_mut().insert(claims);
 
     Ok(next.run(req).await)
 }
