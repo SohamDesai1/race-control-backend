@@ -1,6 +1,7 @@
 use crate::{
     models::{
         cache::CacheEntry,
+        session::Session,
         telemetry::{
             CarDataPoint, DriverLapGraph, FastestLapSector, Lap, LapPosition, LapRecord,
             LocationPoint, PacePoint, PaceQuery, PositionRecord, SpeedDistance, TelemetryQuery,
@@ -13,7 +14,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use chrono::{DateTime, Datelike, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use http::StatusCode;
 use serde::Serialize;
 use serde_json::{from_str, json, Value};
@@ -22,8 +23,8 @@ use tracing::info;
 
 #[derive(serde::Deserialize, Serialize, Debug, Clone)]
 pub struct GetSession {
-    race_id: String,
-    year: Option<String>,
+    race_id: i32,
+    year: Option<i32>,
 }
 
 pub async fn get_sessions(
@@ -33,29 +34,37 @@ pub async fn get_sessions(
     let year = params
         .year
         .clone()
-        .unwrap_or_else(|| chrono::Utc::now().year().to_string());
-    let start = format!("{}-01-01", year);
-    let end = format!("{}-12-31", year);
+        .unwrap_or_else(|| chrono::Utc::now().year());
+    let start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap();
 
     // Fetch sessions from database
-    let res = state
-        .supabase
-        .from("Sessions")
-        .gte("date", &start)
-        .lte("date", &end)
-        .eq("raceId", &params.race_id)
-        .select("*")
-        .order("id.asc")
-        .execute()
-        .await;
+    let res = sqlx::query_as::<_, Session>(
+        r#"
+    SELECT
+    id,
+    "raceId",
+    "sessionType",
+    "date",
+    "time",
+    "session_key",
+    "meeting_key"
+    FROM "Sessions"
+    WHERE "date" >= $1
+    AND "date" <= $2
+    AND "raceId" = $3
+    ORDER BY id ASC
+    "#,
+    )
+    .bind(start)
+    .bind(end)
+    .bind(&params.race_id)
+    .fetch_all(&state.db_pool)
+    .await;
 
     match res {
-        Ok(result) => {
-            let body = result.text().await.unwrap();
-            let res_body: Value = from_str(&body).unwrap();
-            let sessions_array = res_body.as_array().unwrap();
-
-            if sessions_array.is_empty() {
+        Ok(sessions) => {
+            if sessions.is_empty() {
                 return (
                     StatusCode::NOT_FOUND,
                     Json(json!({ "error": "No sessions found for this race" })),
@@ -64,19 +73,16 @@ pub async fn get_sessions(
             }
 
             // Check which sessions are missing session_key
-            let sessions_without_keys: Vec<&Value> = sessions_array
+            let sessions_without_keys: Vec<&Session> = sessions
                 .iter()
-                .filter(|session| {
-                    session.get("session_key").is_none()
-                        || session.get("session_key").unwrap().is_null()
-                })
+                .filter(|session| session.session_key.is_none())
                 .collect();
 
             // If all sessions have keys, return immediately
             if sessions_without_keys.is_empty() {
                 return (
                     StatusCode::OK,
-                    Json(json!({"sessions": res_body,"status": "completed"})),
+                    Json(json!({"sessions": sessions, "status": "completed"})),
                 )
                     .into_response();
             }
@@ -88,22 +94,25 @@ pub async fn get_sessions(
             );
 
             // Get the date from the first session for date range query
-            let start_date = sessions_array[0]["date"].as_str().unwrap_or("");
-            let end_date = sessions_array
-                .last()
-                .and_then(|s| s["date"].as_str())
-                .unwrap_or("");
-            if start_date.is_empty() {
-                return (
-                    StatusCode::OK,
-                    Json(json!({
-                        "sessions": res_body,
-                        "status": "scheduled",
-                        "message": "Future Event, data not yet available"
-                    })),
-                )
-                    .into_response();
-            }
+            let start_date = match sessions.first().and_then(|s| s.date) {
+                Some(d) => d,
+                None => {
+                    return (
+                        StatusCode::OK,
+                        Json(json!({
+                            "sessions": sessions,
+                            "status": "scheduled",
+                            "message": "Future Event, data not yet available"
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+
+            let end_date = match sessions.last().and_then(|s| s.date) {
+                Some(d) => d,
+                None => start_date,
+            };
 
             // Create date range query
             let fallback_url = format!(
@@ -117,7 +126,7 @@ pub async fn get_sessions(
 
             match fallback_res {
                 Ok(response) => {
-                    let fallback_body = response.text().await.unwrap();
+                    let fallback_body = response.text().await.unwrap_or_default();
                     let fallback_sessions: Vec<Value> =
                         from_str(&fallback_body).unwrap_or_default();
 
@@ -126,7 +135,7 @@ pub async fn get_sessions(
                         return (
                             StatusCode::OK,
                             Json(json!({
-                                "sessions": res_body,
+                                "sessions": sessions,
                                 "status": "scheduled",
                                 "message": "Future Event, data not yet available"
                             })),
@@ -143,44 +152,40 @@ pub async fn get_sessions(
                         {
                             if let Some(mapped_name) = map_session_name(ext_name) {
                                 // Check if this session type is missing session_key in our DB
-                                let needs_update = sessions_without_keys.iter().any(|db_session| {
-                                    db_session
-                                        .get("sessionType")
-                                        .and_then(|v| v.as_str())
-                                        .map(|t| t == mapped_name)
-                                        .unwrap_or(false)
-                                });
+                                let needs_update = sessions_without_keys
+                                    .iter()
+                                    .any(|db_session| db_session.session_type == mapped_name);
 
                                 if needs_update {
                                     if let (Some(session_key), Some(meeting_key)) = (
                                         session.get("session_key").and_then(|v| v.as_i64()),
                                         session.get("meeting_key").and_then(|v| v.as_i64()),
                                     ) {
-                                        let update_payload = json!({
-                                            "session_key": session_key,
-                                            "meeting_key": meeting_key
-                                        });
-
                                         info!(
-                                            "Updating {} with payload: {:?}",
-                                            mapped_name, update_payload
+                                            "Updating {} with session_key: {}, meeting_key: {}",
+                                            mapped_name, session_key, meeting_key
                                         );
 
-                                        let update_res = state
-                                            .supabase
-                                            .from("Sessions")
-                                            .eq("sessionType", mapped_name.to_string())
-                                            .eq("raceId", params.race_id.clone())
-                                            .update(&update_payload.to_string())
-                                            .execute()
-                                            .await;
+                                        let update_res = sqlx::query(
+                                            r#"
+                                            UPDATE "Sessions"
+                                            SET "session_key" = $1, "meeting_key" = $2
+                                            WHERE "sessionType" = $3 AND "raceId" = $4
+                                            "#,
+                                        )
+                                        .bind(session_key)
+                                        .bind(meeting_key)
+                                        .bind(mapped_name)
+                                        .bind(&params.race_id)
+                                        .execute(&state.db_pool)
+                                        .await;
 
                                         if let Err(err) = update_res {
-                                            eprintln!(
-                                                "❌ Failed to update {} in Supabase: {:?}",
-                                                mapped_name, err
+                                            tracing::error!(
+                                                "Failed to update {} in database: {:?}",
+                                                mapped_name,
+                                                err
                                             );
-                                            // Don't return error, just log and continue
                                         } else {
                                             updated_sessions.push(json!({
                                                 "session_type": mapped_name,
@@ -196,25 +201,19 @@ pub async fn get_sessions(
                     }
 
                     // Always fetch the latest data from database after attempting updates
-                    let updated_res = state
-                        .supabase
-                        .from("Sessions")
-                        .select("*")
-                        .eq("raceId", params.race_id.clone())
-                        .execute()
-                        .await;
+                    let updated_res = sqlx::query_as::<_, Session>(
+                        r#"SELECT * FROM "Sessions" WHERE "raceId" = $1 ORDER BY id ASC"#,
+                    )
+                    .bind(&params.race_id)
+                    .fetch_all(&state.db_pool)
+                    .await;
 
                     match updated_res {
-                        Ok(result) => {
-                            let updated_body = result.text().await.unwrap();
-                            let updated_sessions_data: Value = from_str(&updated_body).unwrap();
-                            let updated_array = updated_sessions_data.as_array().unwrap();
-
+                        Ok(updated_sessions_data) => {
                             // Check if all sessions now have keys
-                            let all_complete = updated_array.iter().all(|session| {
-                                session.get("session_key").is_some()
-                                    && !session.get("session_key").unwrap().is_null()
-                            });
+                            let all_complete = updated_sessions_data
+                                .iter()
+                                .all(|session| session.session_key.is_some());
 
                             let status = if all_complete { "completed" } else { "partial" };
 
@@ -236,12 +235,11 @@ pub async fn get_sessions(
                             return (StatusCode::OK, Json(response)).into_response();
                         }
                         Err(err) => {
-                            eprintln!("Failed to fetch updated sessions: {:?}", err);
-                            // Return original data if refetch fails
+                            tracing::error!("Failed to fetch updated sessions: {:?}", err);
                             return (
                                 StatusCode::OK,
                                 Json(json!({
-                                    "sessions": res_body,
+                                    "sessions": sessions,
                                     "status": "partial",
                                     "message": "Some sessions updated but failed to refetch"
                                 })),
@@ -251,12 +249,11 @@ pub async fn get_sessions(
                     }
                 }
                 Err(err) => {
-                    eprintln!("OpenF1 API request failed: {:?}", err);
-                    // Return whatever we have from DB
+                    tracing::error!("OpenF1 API request failed: {:?}", err);
                     return (
                         StatusCode::OK,
                         Json(json!({
-                            "sessions": res_body,
+                            "sessions": sessions,
                             "status": "partial",
                             "message": "Some sessions may be completed, OpenF1 API unavailable"
                         })),
@@ -266,7 +263,7 @@ pub async fn get_sessions(
             }
         }
         Err(err) => {
-            eprintln!("Database query failed: {:?}", err);
+            tracing::error!("Database query failed: {:?}", err);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": "Failed to fetch sessions from database" })),

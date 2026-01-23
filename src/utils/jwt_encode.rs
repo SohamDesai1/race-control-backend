@@ -1,22 +1,35 @@
-// use chrono::Utc;
-// use jsonwebtoken::{encode, EncodingKey, Header};
+use jsonwebtoken::{EncodingKey, Header};
 
-// use crate::models::jwt::Claims;
+use crate::models::jwt::{Claims, RefreshClaims};
 
-// pub fn jwt_encode(sub: String, exp: Option<usize>, secret: &[u8]) -> String {
-//     let now = Utc::now();
-//     let iat = now.timestamp() as usize;
-//     let exp = exp.unwrap_or(iat + 60 * 60 * 24);
-//     let claims = Claims {
-//         sub: sub,
-//         iat: iat,
-//         exp: exp,
-//     };
-//     let token = encode(
-//         &Header::default(),
-//         &claims,
-//         &EncodingKey::from_secret(secret),
-//     )
-//     .unwrap();
-//     token
-// }
+pub fn jwt_encode(email: String, secret: &str) -> String {
+    let now = chrono::Utc::now().timestamp() as usize;
+    let claims = Claims {
+        sub: email,
+        iat: now,
+        exp: now + 15 * 60,
+    };
+
+    jsonwebtoken::encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap()
+}
+
+pub fn refresh_token_encode(email: String, secret: &str) -> String {
+    let now = chrono::Utc::now().timestamp() as usize;
+    let claims = RefreshClaims {
+        sub: email,
+        iat: now,
+        exp: now + 1 * 24 * 60 * 60,
+    };
+
+    jsonwebtoken::encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap()
+}
