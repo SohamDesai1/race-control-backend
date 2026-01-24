@@ -16,23 +16,22 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
-use core::time;
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
+
 use std::{
     cmp::Ordering::{Equal, Greater, Less},
-    thread,
+    time::Duration as StdDuration,
 };
 use std::{collections::HashMap, sync::Arc};
+use tokio::time::{sleep, Duration as TokioDuration};
 use tracing::{info, warn};
 
 pub async fn get_sessions(
     State(state): State<Arc<AppState>>,
     Path((race_id, year)): Path<(i32, Option<i32>)>,
 ) -> impl IntoResponse {
-    let year = year
-        .clone()
-        .unwrap_or_else(|| chrono::Utc::now().year());
+    let year = year.clone().unwrap_or_else(|| chrono::Utc::now().year());
     let start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap();
 
@@ -951,10 +950,20 @@ pub async fn get_sector_timings(
         session_key
     );
 
-    let result_body = match state.http_client.get(result_url).send().await {
-        Ok(r) => r.text().await.unwrap(),
+    let result_body = match state.http_client.get(&result_url).send().await {
+        Ok(r) => match r.text().await {
+            Ok(text) => text,
+            Err(e) => {
+                tracing::error!("Failed to read session_result response: {:?}", e);
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "error": "Failed to read session_result" })),
+                )
+                    .into_response();
+            }
+        },
         Err(e) => {
-            warn!("{:?}", e);
+            tracing::error!("Failed to fetch session_result: {:?}", e);
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({ "error": "Failed to fetch session_result" })),
@@ -963,15 +972,46 @@ pub async fn get_sector_timings(
         }
     };
 
-    let session_results: Vec<Value> = serde_json::from_str(&result_body).unwrap_or_default();
+    // Check if we got an error response instead of an array
+    let session_results: Vec<Value> = match serde_json::from_str(&result_body) {
+        Ok(results) => results,
+        Err(e) => {
+            tracing::error!("Failed to parse session_result as array: {:?}", e);
+            tracing::debug!("Response body: {}", result_body);
+
+            // Check if it's a rate limit error
+            if let Ok(error_obj) = serde_json::from_str::<Value>(&result_body) {
+                if error_obj.get("error").is_some() || error_obj.get("message").is_some() {
+                    tracing::warn!("OpenF1 API returned error: {:?}", error_obj);
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(json!({ "error": "OpenF1 API rate limit or error", "details": error_obj })),
+                    )
+                        .into_response();
+                }
+            }
+
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "Invalid response from OpenF1 API" })),
+            )
+                .into_response();
+        }
+    };
 
     let mut response = Vec::new();
 
-    // ✅ Process each top-3 driver
-    for (_idx, driver) in session_results.iter().enumerate() {
+    // ✅ Process each top-3 driver with delays between requests
+    for (idx, driver) in session_results.iter().enumerate() {
+        // Add delay between requests to avoid rate limiting (except for first request)
+        if idx > 0 {
+            sleep(StdDuration::from_millis(300)).await; // 300ms delay between requests
+        }
+
         let position = match driver["position"].as_u64() {
             Some(p) => p as u32,
             None => {
+                tracing::warn!("Missing position for driver: {:?}", driver);
                 continue;
             }
         };
@@ -979,6 +1019,7 @@ pub async fn get_sector_timings(
         let driver_number = match driver["driver_number"].as_u64() {
             Some(d) => d as u32,
             None => {
+                tracing::warn!("Missing driver_number for driver: {:?}", driver);
                 continue;
             }
         };
@@ -989,14 +1030,32 @@ pub async fn get_sector_timings(
             session_key, driver_number
         );
 
-        let laps_body = match state.http_client.get(laps_url).send().await {
-            Ok(r) => r.text().await.unwrap(),
-            Err(_) => {
+        let laps_body = match state.http_client.get(&laps_url).send().await {
+            Ok(r) => match r.text().await {
+                Ok(text) => text,
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to read laps response for driver {}: {:?}",
+                        driver_number,
+                        e
+                    );
+                    continue;
+                }
+            },
+            Err(e) => {
+                tracing::error!("Failed to fetch laps for driver {}: {:?}", driver_number, e);
                 continue;
             }
         };
 
-        let laps: Vec<Value> = serde_json::from_str(&laps_body).unwrap_or_default();
+        let laps: Vec<Value> = match serde_json::from_str(&laps_body) {
+            Ok(laps) => laps,
+            Err(e) => {
+                tracing::error!("Failed to parse laps for driver {}: {:?}", driver_number, e);
+                tracing::debug!("Laps response body: {}", laps_body);
+                continue;
+            }
+        };
 
         let fastest_lap_data = laps
             .iter()
@@ -1010,6 +1069,7 @@ pub async fn get_sector_timings(
         let (lap, fastest_lap) = match fastest_lap_data {
             Some((l, d)) => (l, d),
             None => {
+                tracing::warn!("No valid lap duration found for driver {}", driver_number);
                 continue;
             }
         };
@@ -1038,6 +1098,18 @@ pub async fn get_sector_timings(
             sector_3,
         };
         response.push(entry);
+    }
+
+    if response.is_empty() {
+        tracing::warn!(
+            "No sector timing data collected for session {}",
+            session_key
+        );
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "No sector timing data available" })),
+        )
+            .into_response();
     }
 
     response.sort_by_key(|r| r.position);
@@ -1147,7 +1219,7 @@ async fn get_telemetry_with_distance(
 }
 
 pub fn compute_minisector_pace(a: Vec<(f64, f64, f64)>, b: Vec<(f64, f64, f64)>) -> Vec<PacePoint> {
-    let num_minisectors = 25;
+    let num_minisectors = 26; // Changed from 25 to 26
     let total_distance = a.len().max(b.len()) as f64;
     let minisector_len = total_distance / num_minisectors as f64;
 
@@ -1193,32 +1265,38 @@ pub async fn compare_race_pace(
     let d1 = params.driver_1;
     let d2 = params.driver_2;
     let cache_key = format!("race_pace_{}_{}_{}", session, d1, d2);
+
     if let Some(entry) = state.get_race_pace_cache.get(&cache_key) {
         if !entry.is_expired() {
-            info!("CACHE HIT for session {} for sector timings", session);
+            info!("CACHE HIT for session {} for race pace", session);
             return Json(entry.value.clone());
         }
         info!(
-            "CACHE EXPIRED for session {} for sector timings recomputing…",
+            "CACHE EXPIRED for session {} for race pace, recomputing…",
             session
         );
         drop(entry);
-        state.get_sector_timings_cache.remove(&cache_key);
+        state.get_race_pace_cache.remove(&cache_key);
     }
     info!(
-        "CACHE MISS for session {} for sector timings, computing…",
+        "CACHE MISS for session {} for race pace, computing…",
         session
     );
+
     let (s1, dur1) = get_fastest_lap(&state.http_client, &session, d1)
         .await
         .unwrap();
-    thread::sleep(time::Duration::from_secs(1));
+
+    sleep(TokioDuration::from_millis(300)).await; // Use tokio::time::sleep
+
     let (s2, dur2) = get_fastest_lap(&state.http_client, &session, d2)
         .await
         .unwrap();
 
     let t1 = get_telemetry_with_distance(&state.http_client, &session, d1, &s1, dur1).await;
-    thread::sleep(time::Duration::from_secs(1));
+
+    sleep(TokioDuration::from_millis(300)).await; // Use tokio::time::sleep
+
     let t2 = get_telemetry_with_distance(&state.http_client, &session, d2, &s2, dur2).await;
 
     let result = compute_minisector_pace(t1, t2);

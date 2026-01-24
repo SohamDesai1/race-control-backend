@@ -179,7 +179,7 @@ pub async fn get_race_data(
 }
 
 pub async fn get_upcoming_race_data(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let today = Utc::now().date_naive().format("%Y-%m-%d").to_string();
+    let today = Utc::now().date_naive();
 
     // Fetch all upcoming races with circuit data using a JOIN
     let res = sqlx::query_as::<_, RaceWithCircuit>(
@@ -200,8 +200,8 @@ pub async fn get_upcoming_race_data(State(state): State<Arc<AppState>>) -> impl 
             c.long
         FROM "Races" r
         LEFT JOIN "Circuits" c ON r."circuitId" = c."circuitId"
-        WHERE r.date >= $1
-        ORDER BY r.date ASC
+        WHERE r."date" >= $1
+        ORDER BY r."date" ASC
         "#,
     )
     .bind(&today)
