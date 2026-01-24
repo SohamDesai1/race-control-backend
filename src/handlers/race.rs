@@ -138,7 +138,19 @@ pub async fn get_race_data(
 
     // Fetch sessions
     let sessions = sqlx::query_as::<_, Session>(
-        r#"SELECT * FROM "Sessions" WHERE race_id = $1 ORDER BY id ASC"#,
+        r#"
+            SELECT
+            id,
+            "raceId",
+            "sessionType",
+            "date",
+            "time",
+            "session_key",
+            "meeting_key"
+            FROM "Sessions"
+            WHERE "raceId" = $1
+            ORDER BY id ASC
+            "#,
     )
     .bind(race_data.id)
     .fetch_all(&state.db_pool)
