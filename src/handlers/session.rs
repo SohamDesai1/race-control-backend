@@ -4,7 +4,8 @@ use crate::{
         session::Session,
         telemetry::{
             CarDataPoint, DriverLapGraph, FastestLapSector, Lap, LapPosition, LapRecord,
-            LocationPoint, PacePoint, PaceQuery, PositionRecord, SpeedDistance, TelemetryQuery,
+            LocationPoint, PacePoint, PaceQuery, PositionRecord, QualifyingRanking,
+            QualifyingRankings, SpeedDistance,
         },
     },
     utils::{race_utils::map_session_name, state::AppState},
@@ -16,25 +17,21 @@ use axum::{
 };
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use http::StatusCode;
-use serde::Serialize;
 use serde_json::{from_str, json, Value};
-use std::{collections::HashMap, sync::Arc};
-use tracing::info;
 
-#[derive(serde::Deserialize, Serialize, Debug, Clone)]
-pub struct GetSession {
-    race_id: i32,
-    year: Option<i32>,
-}
+use std::{
+    cmp::Ordering::{Equal, Greater, Less},
+    time::Duration as StdDuration,
+};
+use std::{collections::HashMap, sync::Arc};
+use tokio::time::{sleep, Duration as TokioDuration};
+use tracing::{info, warn};
 
 pub async fn get_sessions(
     State(state): State<Arc<AppState>>,
-    Query(params): Query<GetSession>,
+    Path((race_id, year)): Path<(i32, Option<i32>)>,
 ) -> impl IntoResponse {
-    let year = params
-        .year
-        .clone()
-        .unwrap_or_else(|| chrono::Utc::now().year());
+    let year = year.clone().unwrap_or_else(|| chrono::Utc::now().year());
     let start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap();
 
@@ -58,7 +55,7 @@ pub async fn get_sessions(
     )
     .bind(start)
     .bind(end)
-    .bind(&params.race_id)
+    .bind(&race_id)
     .fetch_all(&state.db_pool)
     .await;
 
@@ -176,7 +173,7 @@ pub async fn get_sessions(
                                         .bind(session_key)
                                         .bind(meeting_key)
                                         .bind(mapped_name)
-                                        .bind(&params.race_id)
+                                        .bind(&race_id)
                                         .execute(&state.db_pool)
                                         .await;
 
@@ -204,7 +201,7 @@ pub async fn get_sessions(
                     let updated_res = sqlx::query_as::<_, Session>(
                         r#"SELECT * FROM "Sessions" WHERE "raceId" = $1 ORDER BY id ASC"#,
                     )
-                    .bind(&params.race_id)
+                    .bind(&race_id)
                     .fetch_all(&state.db_pool)
                     .await;
 
@@ -277,12 +274,10 @@ pub async fn get_session_data(
     State(state): State<Arc<AppState>>,
     Path(session_key): Path<String>,
 ) -> impl IntoResponse {
-    let mut latest_laps: HashMap<String, Value> = HashMap::new();
-
     let res = state
         .http_client
         .get(format!(
-            "https://api.openf1.org/v1/laps?session_key={session_key}"
+            "https://api.openf1.org/v1/session_result?session_key={session_key}"
         ))
         .send()
         .await
@@ -291,36 +286,394 @@ pub async fn get_session_data(
     let body = res.text().await.unwrap();
     let res: Value = from_str(&body).unwrap();
 
-    for lap in res.as_array().unwrap() {
-        let driver_number = lap["driver_number"].to_string();
-
-        let Some(date_str) = lap["date_start"].as_str() else {
-            continue;
-        };
-
-        let Ok(date) = DateTime::parse_from_rfc3339(date_str) else {
-            continue;
-        };
-
-        let date = date.with_timezone(&Utc);
-        latest_laps
-            .entry(driver_number)
-            .and_modify(|existing| {
-                let existing_date_str = existing["date_start"].as_str().unwrap();
-                let existing_date = DateTime::parse_from_rfc3339(existing_date_str)
-                    .unwrap()
-                    .with_timezone(&Utc);
-
-                if date > existing_date {
-                    *existing = lap.clone();
-                }
-            })
-            .or_insert(lap.clone());
-    }
-    let res: Vec<Value> = latest_laps.into_values().collect();
     return (StatusCode::OK, Json(res)).into_response();
 }
 
+fn _parse_lap_time(time_str: &str) -> Option<f64> {
+    if time_str.is_empty() {
+        return None;
+    }
+
+    let parts: Vec<&str> = time_str.split(':').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    let minutes: f64 = parts[0].parse().ok()?;
+    let seconds: f64 = parts[1].parse().ok()?;
+
+    Some(minutes * 60.0 + ((seconds * 100.0).round() / 100.0))
+}
+
+const TTL_SECONDS: i64 = 60 * 60;
+
+pub async fn get_quali_session_data(
+    State(state): State<Arc<AppState>>,
+    Path((year, round)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let cache_key = format!("quali_session_{}_{}", year, round);
+    if let Some(entry) = state.quali_session_cache.get(&cache_key) {
+        if !entry.is_expired() {
+            info!("CACHE HIT for qual session {} round {}", year, round);
+            return (StatusCode::OK, Json(entry.value.clone())).into_response();
+        }
+        info!(
+            "CACHE EXPIRED for for qual session {} round {}, recomputing…",
+            year, round
+        );
+        drop(entry);
+        state.quali_session_cache.remove(&cache_key);
+    }
+    let res = state
+        .http_client
+        .get(format!(
+            "https://api.jolpi.ca/ergast/f1/{}/{}/qualifying?format=json",
+            year, round
+        ))
+        .send()
+        .await;
+
+    match res {
+        Ok(res) => {
+            let body: String = res.text().await.unwrap();
+            let res_body: Value = from_str(&body).unwrap();
+
+            let qualifying_results = match res_body["MRData"]["RaceTable"]["Races"]
+                .as_array()
+                .and_then(|races| races.first())
+                .and_then(|race| race["QualifyingResults"].as_array())
+            {
+                Some(results) => results,
+                None => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({ "error": "No qualifying results found" })),
+                    )
+                        .into_response();
+                }
+            };
+
+            let mut q1_rankings = Vec::new();
+            let mut q2_rankings = Vec::new();
+            let mut q3_rankings = Vec::new();
+
+            // Collect all times for each session
+            for result in qualifying_results {
+                let driver_number = result["number"].as_str().unwrap_or("").to_string();
+                let driver_code = result["Driver"]["code"].as_str().unwrap_or("").to_string();
+                let driver_name = format!(
+                    "{} {}",
+                    result["Driver"]["givenName"].as_str().unwrap_or(""),
+                    result["Driver"]["familyName"].as_str().unwrap_or("")
+                );
+                let constructor = result["Constructor"]["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+
+                if let Some(q1_time) = result["Q1"].as_str() {
+                    if !q1_time.is_empty() {
+                        q1_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: Some(driver_number.clone()),
+                            driver_code: Some(driver_code.clone()),
+                            driver_name: Some(driver_name.clone()),
+                            constructor: Some(constructor.clone()),
+                            time: q1_time.to_string(),
+                            time_seconds: _parse_lap_time(q1_time),
+                        });
+                    } else {
+                        q1_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: Some(driver_number.clone()),
+                            driver_code: Some(driver_code.clone()),
+                            driver_name: Some(driver_name.clone()),
+                            constructor: Some(constructor.clone()),
+                            time: "".to_string(),
+                            time_seconds: None,
+                        });
+                    }
+                }
+
+                if let Some(q2_time) = result["Q2"].as_str() {
+                    if !q2_time.is_empty() {
+                        q2_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: Some(driver_number.clone()),
+                            driver_code: Some(driver_code.clone()),
+                            driver_name: Some(driver_name.clone()),
+                            constructor: Some(constructor.clone()),
+                            time: q2_time.to_string(),
+                            time_seconds: _parse_lap_time(q2_time),
+                        });
+                    } else {
+                        q2_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: Some(driver_number.clone()),
+                            driver_code: Some(driver_code.clone()),
+                            driver_name: Some(driver_name.clone()),
+                            constructor: Some(constructor.clone()),
+                            time: "".to_string(),
+                            time_seconds: None,
+                        });
+                    }
+                }
+
+                if let Some(q3_time) = result["Q3"].as_str() {
+                    if !q3_time.is_empty() {
+                        q3_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: Some(driver_number.clone()),
+                            driver_code: Some(driver_code.clone()),
+                            driver_name: Some(driver_name.clone()),
+                            constructor: Some(constructor.clone()),
+                            time: q3_time.to_string(),
+                            time_seconds: _parse_lap_time(q3_time),
+                        });
+                    } else {
+                        q3_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: Some(driver_number.clone()),
+                            driver_code: Some(driver_code.clone()),
+                            driver_name: Some(driver_name.clone()),
+                            constructor: Some(constructor.clone()),
+                            time: "".to_string(),
+                            time_seconds: None,
+                        });
+                    }
+                }
+            }
+
+            q1_rankings.sort_by(|a, b| match (a.time_seconds, b.time_seconds) {
+                (Some(time_a), Some(time_b)) => time_a.partial_cmp(&time_b).unwrap_or(Equal),
+                (Some(_), None) => Less,
+                (None, Some(_)) => Greater,
+                (None, None) => Equal,
+            });
+            for (i, ranking) in q1_rankings.iter_mut().enumerate() {
+                ranking.position = (i + 1) as u32;
+            }
+
+            q2_rankings.sort_by(|a, b| match (a.time_seconds, b.time_seconds) {
+                (Some(time_a), Some(time_b)) => time_a.partial_cmp(&time_b).unwrap_or(Equal),
+                (Some(_), None) => Less,
+                (None, Some(_)) => Greater,
+                (None, None) => Equal,
+            });
+            for (i, ranking) in q2_rankings.iter_mut().enumerate() {
+                ranking.position = (i + 1) as u32;
+            }
+
+            q3_rankings.sort_by(|a, b| match (a.time_seconds, b.time_seconds) {
+                (Some(time_a), Some(time_b)) => time_a.partial_cmp(&time_b).unwrap_or(Equal),
+                (Some(_), None) => Less,
+                (None, Some(_)) => Greater,
+                (None, None) => Equal,
+            });
+            for (i, ranking) in q3_rankings.iter_mut().enumerate() {
+                ranking.position = (i + 1) as u32;
+            }
+
+            let rankings = QualifyingRankings {
+                q1: q1_rankings,
+                q2: q2_rankings,
+                q3: q3_rankings,
+            };
+            state
+                .quali_session_cache
+                .insert(cache_key, CacheEntry::new(rankings.clone(), TTL_SECONDS));
+            return (StatusCode::OK, Json(rankings)).into_response();
+        }
+        Err(e) => {
+            warn!("Failed to fetch qualifying data: {:?}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "Failed to fetch qualifying data" })),
+            )
+                .into_response();
+        }
+    }
+}
+
+pub async fn get_sprint_quali_session_data(
+    State(state): State<Arc<AppState>>,
+    Path(session_key): Path<String>,
+) -> impl IntoResponse {
+    let res = state
+        .http_client
+        .get(format!(
+            "https://api.openf1.org/v1/session_result?session_key={session_key}"
+        ))
+        .send()
+        .await;
+
+    match res {
+        Ok(response) => {
+            let body: String = response.text().await.unwrap();
+            let res_body: Value = from_str(&body).unwrap();
+
+            // Extract meeting_key from the first result to fetch driver info
+            let meeting_key = res_body
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|first| first["meeting_key"].as_u64())
+                .map(|k| k as u32);
+
+            if meeting_key.is_none() {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "No meeting key found in session results" })),
+                )
+                    .into_response();
+            }
+
+            let _meeting_key = meeting_key.unwrap();
+
+            let mut q1_rankings = Vec::new();
+            let mut q2_rankings = Vec::new();
+            let mut q3_rankings = Vec::new();
+
+            // Process each driver's qualifying result
+            if let Some(results_array) = res_body.as_array() {
+                for result in results_array {
+                    let driver_number = result["driver_number"].as_u64().unwrap_or(0) as u32;
+                    let _position = result["position"].as_u64().unwrap_or(0) as u32;
+
+                    // Get driver info from our mapping
+
+                    // Extract Q1, Q2, Q3 times from duration array
+                    let duration_array = result["duration"].as_array();
+                    let gap_array = result["gap_to_leader"].as_array();
+
+                    // Process Q1
+                    if let (Some(durations), Some(_gaps)) = (duration_array, gap_array) {
+                        if let Some(q1_duration) = durations.get(0) {
+                            if let Some(q1_time) = q1_duration.as_f64() {
+                                q1_rankings.push(QualifyingRanking {
+                                    position: 0, // Will be set after sorting
+                                    driver_number: Some(driver_number.to_string()),
+                                    time: format!("{:.3}", q1_time),
+                                    time_seconds: Some(q1_time),
+                                    driver_code: None,
+                                    driver_name: None,
+                                    constructor: None,
+                                });
+                            } else {
+                                q1_rankings.push(QualifyingRanking {
+                                    position: 0,
+                                    driver_number: Some(driver_number.to_string()),
+                                    time: "".to_string(),
+                                    time_seconds: None,
+                                    driver_code: None,
+                                    driver_name: None,
+                                    constructor: None,
+                                });
+                            }
+                        }
+
+                        // Process Q2
+                        if let Some(q2_duration) = durations.get(1) {
+                            if let Some(q2_time) = q2_duration.as_f64() {
+                                q2_rankings.push(QualifyingRanking {
+                                    position: 0,
+                                    driver_number: Some(driver_number.to_string()),
+                                    time: format!("{:.3}", q2_time),
+                                    time_seconds: Some(q2_time),
+                                    driver_code: None,
+                                    driver_name: None,
+                                    constructor: None,
+                                });
+                            } else {
+                                q2_rankings.push(QualifyingRanking {
+                                    position: 0,
+                                    driver_number: Some(driver_number.to_string()),
+
+                                    time: "".to_string(),
+                                    time_seconds: None,
+                                    driver_code: None,
+                                    driver_name: None,
+                                    constructor: None,
+                                });
+                            }
+                        }
+
+                        // Process Q3
+                        if let Some(q3_duration) = durations.get(2) {
+                            if let Some(q3_time) = q3_duration.as_f64() {
+                                q3_rankings.push(QualifyingRanking {
+                                    position: 0,
+                                    driver_number: Some(driver_number.to_string()),
+                                    time: format!("{:.3}", q3_time),
+                                    time_seconds: Some(q3_time),
+                                    driver_code: None,
+                                    driver_name: None,
+                                    constructor: None,
+                                });
+                            } else {
+                                q3_rankings.push(QualifyingRanking {
+                                    position: 0,
+                                    driver_number: Some(driver_number.to_string()),
+                                    time: "".to_string(),
+                                    time_seconds: None,
+                                    driver_code: None,
+                                    driver_name: None,
+                                    constructor: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Sort and assign positions for each session
+            q1_rankings.sort_by(|a, b| match (a.time_seconds, b.time_seconds) {
+                (Some(time_a), Some(time_b)) => time_a.partial_cmp(&time_b).unwrap_or(Equal),
+                (Some(_), None) => Less,
+                (None, Some(_)) => Greater,
+                (None, None) => Equal,
+            });
+            for (i, ranking) in q1_rankings.iter_mut().enumerate() {
+                ranking.position = (i + 1) as u32;
+            }
+
+            q2_rankings.sort_by(|a, b| match (a.time_seconds, b.time_seconds) {
+                (Some(time_a), Some(time_b)) => time_a.partial_cmp(&time_b).unwrap_or(Equal),
+                (Some(_), None) => Less,
+                (None, Some(_)) => Greater,
+                (None, None) => Equal,
+            });
+            for (i, ranking) in q2_rankings.iter_mut().enumerate() {
+                ranking.position = (i + 1) as u32;
+            }
+
+            q3_rankings.sort_by(|a, b| match (a.time_seconds, b.time_seconds) {
+                (Some(time_a), Some(time_b)) => time_a.partial_cmp(&time_b).unwrap_or(Equal),
+                (Some(_), None) => Less,
+                (None, Some(_)) => Greater,
+                (None, None) => Equal,
+            });
+            for (i, ranking) in q3_rankings.iter_mut().enumerate() {
+                ranking.position = (i + 1) as u32;
+            }
+
+            let rankings = QualifyingRankings {
+                q1: q1_rankings,
+                q2: q2_rankings,
+                q3: q3_rankings,
+            };
+
+            return (StatusCode::OK, Json(rankings)).into_response();
+        }
+        Err(e) => {
+            warn!("Failed to fetch qualifying data: {:?}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "Failed to fetch qualifying data" })),
+            )
+                .into_response();
+        }
+    }
+}
 // Helper to parse RFC3339 date string to chrono::DateTime<Utc>
 fn _parse_date(date: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(date)
@@ -328,15 +681,16 @@ fn _parse_date(date: &str) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-const TTL_SECONDS: i64 = 60 * 60;
-
 pub async fn fetch_driver_telemetry(
     State(state): State<Arc<AppState>>,
-    Query(params): Query<TelemetryQuery>,
+    Path((session_key, driver_number)): Path<(i32, i32)>,
 ) -> impl IntoResponse {
-    let session_key = params.session_key.clone();
-    let driver_number = params.driver_number.clone();
-    let cache_key = format!("session_drivers_position_graph_{}", session_key);
+    let session_key = session_key.clone();
+    let driver_number = driver_number.clone();
+    let cache_key = format!(
+        "session_drivers_telemetry_graph_{}_{}",
+        session_key, driver_number
+    );
     if let Some(entry) = state.fetch_driver_telemetry_cache.get(&cache_key) {
         if !entry.is_expired() {
             info!(
@@ -349,6 +703,7 @@ pub async fn fetch_driver_telemetry(
             "CACHE EXPIRED for session {} driver {}, recomputing…",
             session_key, driver_number
         );
+        drop(entry);
         state.fetch_driver_telemetry_cache.remove(&cache_key);
     }
     // 1. Get latest lap for driver
@@ -470,6 +825,7 @@ pub async fn get_drivers_position_telemetry(
             return Json(entry.value.clone());
         }
         info!("CACHE EXPIRED for session {}, recomputing…", session_key);
+        drop(entry);
         state
             .get_drivers_position_telemetry_cache
             .remove(&cache_key);
@@ -580,21 +936,34 @@ pub async fn get_sector_timings(
             "CACHE EXPIRED for session {} for sector timings recomputing…",
             session_key
         );
+        drop(entry);
         state.get_sector_timings_cache.remove(&cache_key);
     }
     info!(
         "CACHE MISS for session {} for sector timings, computing…",
         session_key
     );
-    //  Get fastest lap from session_result
+
+    // ✅ Get top 3 drivers from session_result
     let result_url = format!(
         "https://api.openf1.org/v1/session_result?session_key={}&position<=3",
         session_key
     );
 
-    let result_body = match state.http_client.get(result_url).send().await {
-        Ok(r) => r.text().await.unwrap(),
-        Err(_) => {
+    let result_body = match state.http_client.get(&result_url).send().await {
+        Ok(r) => match r.text().await {
+            Ok(text) => text,
+            Err(e) => {
+                tracing::error!("Failed to read session_result response: {:?}", e);
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "error": "Failed to read session_result" })),
+                )
+                    .into_response();
+            }
+        },
+        Err(e) => {
+            tracing::error!("Failed to fetch session_result: {:?}", e);
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({ "error": "Failed to fetch session_result" })),
@@ -603,48 +972,106 @@ pub async fn get_sector_timings(
         }
     };
 
-    let session_results: Vec<Value> = serde_json::from_str(&result_body).unwrap_or_default();
+    // Check if we got an error response instead of an array
+    let session_results: Vec<Value> = match serde_json::from_str(&result_body) {
+        Ok(results) => results,
+        Err(e) => {
+            tracing::error!("Failed to parse session_result as array: {:?}", e);
+            tracing::debug!("Response body: {}", result_body);
+
+            // Check if it's a rate limit error
+            if let Ok(error_obj) = serde_json::from_str::<Value>(&result_body) {
+                if error_obj.get("error").is_some() || error_obj.get("message").is_some() {
+                    tracing::warn!("OpenF1 API returned error: {:?}", error_obj);
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(json!({ "error": "OpenF1 API rate limit or error", "details": error_obj })),
+                    )
+                        .into_response();
+                }
+            }
+
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "Invalid response from OpenF1 API" })),
+            )
+                .into_response();
+        }
+    };
+
     let mut response = Vec::new();
 
-    // ✅ STEP 2: Process each top-3 driver
-    for driver in session_results {
-        let position = driver["position"].as_u64().unwrap() as u32;
-        let driver_number = driver["driver_number"].as_u64().unwrap() as u32;
+    // ✅ Process each top-3 driver with delays between requests
+    for (idx, driver) in session_results.iter().enumerate() {
+        // Add delay between requests to avoid rate limiting (except for first request)
+        if idx > 0 {
+            sleep(StdDuration::from_millis(300)).await; // 300ms delay between requests
+        }
 
-        // ✅ Fastest lap = last value from duration array
-        let fastest_lap = match driver["duration"]
-            .as_array()
-            .and_then(|d| d.last())
-            .and_then(|v| v.as_f64())
-        {
-            Some(v) => v,
-            None => continue,
+        let position = match driver["position"].as_u64() {
+            Some(p) => p as u32,
+            None => {
+                tracing::warn!("Missing position for driver: {:?}", driver);
+                continue;
+            }
         };
 
-        // ✅ STEP 3: Fetch laps for that driver
+        let driver_number = match driver["driver_number"].as_u64() {
+            Some(d) => d as u32,
+            None => {
+                tracing::warn!("Missing driver_number for driver: {:?}", driver);
+                continue;
+            }
+        };
+
+        // ✅ Fetch all laps for this driver
         let laps_url = format!(
             "https://api.openf1.org/v1/laps?session_key={}&driver_number={}",
             session_key, driver_number
         );
 
-        let laps_body = match state.http_client.get(laps_url).send().await {
-            Ok(r) => r.text().await.unwrap(),
-            Err(_) => continue,
+        let laps_body = match state.http_client.get(&laps_url).send().await {
+            Ok(r) => match r.text().await {
+                Ok(text) => text,
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to read laps response for driver {}: {:?}",
+                        driver_number,
+                        e
+                    );
+                    continue;
+                }
+            },
+            Err(e) => {
+                tracing::error!("Failed to fetch laps for driver {}: {:?}", driver_number, e);
+                continue;
+            }
         };
 
-        let laps: Vec<Value> = serde_json::from_str(&laps_body).unwrap_or_default();
+        let laps: Vec<Value> = match serde_json::from_str(&laps_body) {
+            Ok(laps) => laps,
+            Err(e) => {
+                tracing::error!("Failed to parse laps for driver {}: {:?}", driver_number, e);
+                tracing::debug!("Laps response body: {}", laps_body);
+                continue;
+            }
+        };
 
-        // ✅ STEP 4: Match fastest lap from laps API
-        let matching_lap = laps.iter().find(|lap| {
-            lap.get("lap_duration")
-                .and_then(|v| v.as_f64())
-                .map(|d| (d - fastest_lap).abs() < 0.001)
-                .unwrap_or(false)
-        });
+        let fastest_lap_data = laps
+            .iter()
+            .filter_map(|lap| {
+                lap.get("lap_duration")
+                    .and_then(|v| v.as_f64())
+                    .map(|duration| (lap, duration))
+            })
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let lap = match matching_lap {
-            Some(l) => l,
-            None => continue,
+        let (lap, fastest_lap) = match fastest_lap_data {
+            Some((l, d)) => (l, d),
+            None => {
+                tracing::warn!("No valid lap duration found for driver {}", driver_number);
+                continue;
+            }
         };
 
         let sector_1 = lap
@@ -662,14 +1089,27 @@ pub async fn get_sector_timings(
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
 
-        response.push(FastestLapSector {
+        let entry = FastestLapSector {
             position,
             driver_number,
             fastest_lap,
             sector_1,
             sector_2,
             sector_3,
-        });
+        };
+        response.push(entry);
+    }
+
+    if response.is_empty() {
+        tracing::warn!(
+            "No sector timing data collected for session {}",
+            session_key
+        );
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "No sector timing data available" })),
+        )
+            .into_response();
     }
 
     response.sort_by_key(|r| r.position);
@@ -779,7 +1219,7 @@ async fn get_telemetry_with_distance(
 }
 
 pub fn compute_minisector_pace(a: Vec<(f64, f64, f64)>, b: Vec<(f64, f64, f64)>) -> Vec<PacePoint> {
-    let num_minisectors = 25;
+    let num_minisectors = 26; // Changed from 25 to 26
     let total_distance = a.len().max(b.len()) as f64;
     let minisector_len = total_distance / num_minisectors as f64;
 
@@ -818,35 +1258,45 @@ pub fn compute_minisector_pace(a: Vec<(f64, f64, f64)>, b: Vec<(f64, f64, f64)>)
 
 pub async fn compare_race_pace(
     State(state): State<Arc<AppState>>,
+    Path(session_key): Path<String>,
     Query(params): Query<PaceQuery>,
 ) -> Json<Vec<PacePoint>> {
-    let session = params.session_key.clone();
+    let session = session_key.clone();
     let d1 = params.driver_1;
     let d2 = params.driver_2;
     let cache_key = format!("race_pace_{}_{}_{}", session, d1, d2);
+
     if let Some(entry) = state.get_race_pace_cache.get(&cache_key) {
         if !entry.is_expired() {
-            info!("CACHE HIT for session {} for sector timings", session);
+            info!("CACHE HIT for session {} for race pace", session);
             return Json(entry.value.clone());
         }
         info!(
-            "CACHE EXPIRED for session {} for sector timings recomputing…",
+            "CACHE EXPIRED for session {} for race pace, recomputing…",
             session
         );
-        state.get_sector_timings_cache.remove(&cache_key);
+        drop(entry);
+        state.get_race_pace_cache.remove(&cache_key);
     }
     info!(
-        "CACHE MISS for session {} for sector timings, computing…",
+        "CACHE MISS for session {} for race pace, computing…",
         session
     );
+
     let (s1, dur1) = get_fastest_lap(&state.http_client, &session, d1)
         .await
         .unwrap();
+
+    sleep(TokioDuration::from_millis(300)).await; // Use tokio::time::sleep
+
     let (s2, dur2) = get_fastest_lap(&state.http_client, &session, d2)
         .await
         .unwrap();
 
     let t1 = get_telemetry_with_distance(&state.http_client, &session, d1, &s1, dur1).await;
+
+    sleep(TokioDuration::from_millis(300)).await; // Use tokio::time::sleep
+
     let t2 = get_telemetry_with_distance(&state.http_client, &session, d2, &s2, dur2).await;
 
     let result = compute_minisector_pace(t1, t2);

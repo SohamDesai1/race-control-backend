@@ -47,19 +47,22 @@ pub async fn get_news(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         .await
     {
         Ok(res) => {
-            if let Ok(text) = res.text().await {
-                if let Ok(json1) = serde_json::from_str::<Value>(&text) {
-                    if let Some(article) = json1["articles"].get(0) {
-                        collected.push(json!({
-                            "source": "newsapi",
-                            "title": article["title"],
-                            "description": article["description"],
-                            "url": article["url"],
-                            "image": article["urlToImage"],
-                            "published_at": article["publishedAt"]
-                        }));
+            match res.text().await {
+                Ok(text) => {
+                    if let Ok(json1) = serde_json::from_str::<Value>(&text) {
+                        if let Some(article) = json1["articles"].get(0) {
+                            collected.push(json!({
+                                "source": "newsapi",
+                                "title": article["title"],
+                                "description": article["description"],
+                                "url": article["url"],
+                                "image": article["urlToImage"],
+                                "published_at": article["publishedAt"]
+                            }));
+                        }
                     }
                 }
+                Err(e) => tracing::warn!("Failed to read NewsAPI response: {:?}", e),
             }
         }
         Err(e) => tracing::warn!("Failed to fetch from NewsAPI: {:?}", e),
@@ -77,19 +80,22 @@ pub async fn get_news(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         .await
     {
         Ok(res) => {
-            if let Ok(text) = res.text().await {
-                if let Ok(json2) = serde_json::from_str::<Value>(&text) {
-                    if let Some(article) = json2["news"].get(0) {
-                        collected.push(json!({
-                            "source": "worldnewsapi",
-                            "title": article["title"],
-                            "description": article["summary"],
-                            "url": article["url"],
-                            "image": article["image"],
-                            "published_at": article["publish_date"]
-                        }));
+            match res.text().await {
+                Ok(text) => {
+                    if let Ok(json2) = serde_json::from_str::<Value>(&text) {
+                        if let Some(article) = json2["news"].get(0) {
+                            collected.push(json!({
+                                "source": "worldnewsapi",
+                                "title": article["title"],
+                                "description": article["summary"],
+                                "url": article["url"],
+                                "image": article["image"],
+                                "published_at": article["publish_date"]
+                            }));
+                        }
                     }
                 }
+                Err(e) => tracing::warn!("Failed to read WorldNewsAPI response: {:?}", e),
             }
         }
         Err(e) => tracing::warn!("Failed to fetch from WorldNewsAPI: {:?}", e),
@@ -103,12 +109,12 @@ pub async fn get_news(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             VALUES ($1, $2, $3, $4, $5, $6)
             "#,
         )
-        .bind(item["source"].as_str().unwrap_or(""))
-        .bind(item["title"].as_str().unwrap_or(""))
-        .bind(item["description"].as_str())
-        .bind(item["url"].as_str().unwrap_or(""))
-        .bind(item["image"].as_str())
-        .bind(item["published_at"].as_str())
+        .bind(item["source"].as_str().unwrap_or("").to_string())
+        .bind(item["title"].as_str().unwrap_or("").to_string())
+        .bind(item["description"].as_str().map(|s| s.to_string()))
+        .bind(item["url"].as_str().unwrap_or("").to_string())
+        .bind(item["image"].as_str().map(|s| s.to_string()))
+        .bind(item["published_at"].as_str().map(|s| s.to_string()))
         .execute(&state.db_pool)
         .await;
     }

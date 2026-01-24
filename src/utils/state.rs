@@ -2,13 +2,15 @@
 use crate::{
     models::{
         cache::CacheEntry,
-        telemetry::{DriverLapGraph, FastestLapSector, PacePoint, SpeedDistance},
+        telemetry::{
+            DriverLapGraph, FastestLapSector, PacePoint, QualifyingRankings, SpeedDistance,
+        },
     },
     utils::config::Config,
 };
 use dashmap::DashMap;
-use sqlx::PgPool;
 use reqwest::Client;
+use sqlx::PgPool;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -19,4 +21,5 @@ pub struct AppState {
     pub get_drivers_position_telemetry_cache: DashMap<String, CacheEntry<Vec<DriverLapGraph>>>,
     pub get_sector_timings_cache: DashMap<String, CacheEntry<Vec<FastestLapSector>>>,
     pub get_race_pace_cache: DashMap<String, CacheEntry<Vec<PacePoint>>>,
+    pub quali_session_cache: DashMap<String, CacheEntry<QualifyingRankings>>,
 }

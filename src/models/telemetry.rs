@@ -1,12 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize)]
-pub struct TelemetryQuery {
-    pub session_key: String,
-    pub driver_number: String,
-}
-
 #[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct CarDataPoint {
@@ -69,7 +63,6 @@ pub struct FastestLapSector {
 
 #[derive(Deserialize)]
 pub struct PaceQuery {
-    pub session_key: String,
     pub driver_1: u32,
     pub driver_2: u32,
 }
@@ -93,5 +86,28 @@ pub struct PacePoint {
     pub x: f64,
     pub y: f64,
     pub minisector: u32,
-    pub fastest_driver: u32, 
+    pub fastest_driver: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QualifyingRanking {
+    pub position: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driver_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driver_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driver_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub constructor: Option<String>,
+    pub time: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_seconds: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QualifyingRankings {
+    pub q1: Vec<QualifyingRanking>,
+    pub q2: Vec<QualifyingRanking>,
+    pub q3: Vec<QualifyingRanking>,
 }

@@ -3,7 +3,8 @@ use crate::{
         middleware::auth_middleware,
         session::{
             compare_race_pace, fetch_driver_telemetry, get_drivers_position_telemetry,
-            get_sector_timings, get_session_data, get_sessions,
+            get_quali_session_data, get_sector_timings, get_session_data, get_sessions,
+            get_sprint_quali_session_data,
         },
     },
     utils::state::AppState,
@@ -13,15 +14,23 @@ use std::sync::Arc;
 
 pub fn session_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let session_router = Router::new()
-        .route("/get_sessions/", get(get_sessions))
+        .route("/get_sessions/{race_id}/{year}", get(get_sessions))
         .route("/get_session_data/{session_key}", get(get_session_data))
-        .route("/fetch_driver_telemetry", get(fetch_driver_telemetry))
+        .route(
+            "/get_quali_session_data/{year}/{round}",
+            get(get_quali_session_data),
+        )
+        .route(
+            "/fetch_driver_telemetry/{session_key}/{driver_number}",
+            get(fetch_driver_telemetry),
+        )
         .route(
             "/get_drivers_position_telemetry/{session_key}",
             get(get_drivers_position_telemetry),
         )
         .route("/get_sector_timings/{session_key}", get(get_sector_timings))
-        .route("/compare_race_pace", get(compare_race_pace))
+        .route("/get_sprint_quali_session_data/{session_key}", get(get_sprint_quali_session_data))
+        .route("/compare_race_pace/{session_key}", get(compare_race_pace))
         .with_state(state.clone());
 
     session_router.layer(from_fn(move |req, next| {

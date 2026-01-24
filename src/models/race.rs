@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
 #[derive(FromRow, Debug, Clone, Serialize, Deserialize)]
-pub struct Race {
+pub struct _Race {
     pub id: i64,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
     pub season: String,
