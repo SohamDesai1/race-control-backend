@@ -7,10 +7,11 @@ use dashmap::DashMap;
 use http::StatusCode;
 use serde_json::json;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use std::{error::Error, str::FromStr, sync::Arc};
+use std::{error::Error, str::FromStr, sync::Arc, time::Duration};
 use tower_http::trace::TraceLayer;
 use tracing::{info, Level};
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, Registry};
+
 pub use users::user_routes;
 pub mod auth;
 pub use auth::auth_routes;
@@ -24,7 +25,7 @@ use crate::{
         },
     },
     routes::{race::race_routes, session::session_routes, standings::standings_routes},
-    utils::{config::Config, state::AppState},
+    utils::{config::Config, rate_limiter::RateLimiter, state::AppState},
 };
 
 pub async fn make_app() -> Result<Router, Box<dyn Error>> {
@@ -68,7 +69,11 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         .await?;
 
     info!("Database connection pool created successfully");
-    let http_client = reqwest::Client::new();
+    let http_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .expect("Failed to create HTTP client");
     info!("External clients initialized successfully");
 
     let fetch_driver_telemetry_cache: DashMap<String, CacheEntry<Vec<SpeedDistance>>> =
@@ -80,6 +85,8 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
     let get_race_pace_cache: DashMap<String, CacheEntry<Vec<PacePoint>>> = DashMap::new();
     let quali_session_cache: DashMap<String, CacheEntry<QualifyingRankings>> = DashMap::new();
 
+    let rate_limiter = RateLimiter::new(3, 300); // Max 2 concurrent, 300ms between requests
+
     let state = Arc::new(AppState {
         db_pool,
         config,
@@ -88,7 +95,8 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         get_drivers_position_telemetry_cache,
         get_sector_timings_cache,
         get_race_pace_cache,
-        quali_session_cache
+        quali_session_cache,
+        rate_limiter,
     });
 
     let value1 = state.clone();

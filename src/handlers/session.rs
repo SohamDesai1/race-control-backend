@@ -8,7 +8,7 @@ use crate::{
             QualifyingRankings, SpeedDistance,
         },
     },
-    utils::{race_utils::map_session_name, state::AppState},
+    utils::{race_utils::map_session_name, rate_limiter::RateLimiter, state::AppState},
 };
 use axum::{
     extract::{Path, Query, State},
@@ -19,12 +19,9 @@ use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
 
-use std::{
-    cmp::Ordering::{Equal, Greater, Less},
-    time::Duration as StdDuration,
-};
+use std::cmp::Ordering::{Equal, Greater, Less};
 use std::{collections::HashMap, sync::Arc};
-use tokio::time::{sleep, Duration as TokioDuration};
+use tokio::time::{sleep, timeout, Duration as TokioDuration};
 use tracing::{info, warn};
 
 pub async fn get_sessions(
@@ -274,19 +271,101 @@ pub async fn get_session_data(
     State(state): State<Arc<AppState>>,
     Path(session_key): Path<String>,
 ) -> impl IntoResponse {
-    let res = state
-        .http_client
-        .get(format!(
-            "https://api.openf1.org/v1/session_result?session_key={session_key}"
-        ))
-        .send()
-        .await
-        .unwrap();
+    let _guard = state.rate_limiter.acquire().await;
+    
+    let url = format!(
+        "https://api.openf1.org/v1/session_result?session_key={}",
+        session_key
+    );
 
-    let body = res.text().await.unwrap();
-    let res: Value = from_str(&body).unwrap();
+    // Add timeout to prevent hanging requests
+    let request_future = state.http_client.get(&url).send();
 
-    return (StatusCode::OK, Json(res)).into_response();
+    let res = match timeout(tokio::time::Duration::from_secs(10), request_future).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(e)) => {
+            tracing::error!("Failed to fetch session data: {:?}", e);
+
+            if e.is_connect() {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "error": "Failed to connect to OpenF1 API",
+                        "details": "Network connection error or DNS resolution failure"
+                    })),
+                )
+                    .into_response();
+            } else if e.is_timeout() {
+                return (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    Json(json!({"error": "Request to OpenF1 API timed out"})),
+                )
+                    .into_response();
+            } else {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({"error": "Failed to fetch session data"})),
+                )
+                    .into_response();
+            }
+        }
+        Err(_) => {
+            tracing::error!("Request to OpenF1 API timed out after 10 seconds");
+            return (
+                StatusCode::GATEWAY_TIMEOUT,
+                Json(json!({"error": "Request timed out"})),
+            )
+                .into_response();
+        }
+    };
+
+    let status = res.status();
+    if !status.is_success() {
+        tracing::warn!("OpenF1 API returned status: {}", status);
+
+        return match status.as_u16() {
+            404 => (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Session not found", "session_key": session_key})),
+            ),
+            429 => (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({"error": "OpenF1 API rate limit exceeded"})),
+            ),
+            _ => (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "OpenF1 API returned error", "status": status.as_u16()})),
+            ),
+        }
+        .into_response();
+    }
+
+    let body = match res.text().await {
+        Ok(text) => text,
+        Err(e) => {
+            tracing::error!("Failed to read response: {:?}", e);
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Failed to read response"})),
+            )
+                .into_response();
+        }
+    };
+
+    let session_data: Value = match from_str(&body) {
+        Ok(data) => data,
+        Err(e) => {
+            tracing::error!("Failed to parse JSON: {:?}", e);
+            tracing::debug!("Response: {}", body);
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Invalid response format"})),
+            )
+                .into_response();
+        }
+    };
+
+    (StatusCode::OK, Json(session_data)).into_response()
 }
 
 fn _parse_lap_time(time_str: &str) -> Option<f64> {
@@ -324,6 +403,9 @@ pub async fn get_quali_session_data(
         drop(entry);
         state.quali_session_cache.remove(&cache_key);
     }
+    
+    let _guard = state.rate_limiter.acquire().await;
+    
     let res = state
         .http_client
         .get(format!(
@@ -499,6 +581,8 @@ pub async fn get_sprint_quali_session_data(
     State(state): State<Arc<AppState>>,
     Path(session_key): Path<String>,
 ) -> impl IntoResponse {
+    let _guard = state.rate_limiter.acquire().await;
+    
     let res = state
         .http_client
         .get(format!(
@@ -685,12 +769,12 @@ pub async fn fetch_driver_telemetry(
     State(state): State<Arc<AppState>>,
     Path((session_key, driver_number)): Path<(i32, i32)>,
 ) -> impl IntoResponse {
-    let session_key = session_key.clone();
-    let driver_number = driver_number.clone();
     let cache_key = format!(
         "session_drivers_telemetry_graph_{}_{}",
         session_key, driver_number
     );
+
+    // Check cache
     if let Some(entry) = state.fetch_driver_telemetry_cache.get(&cache_key) {
         if !entry.is_expired() {
             info!(
@@ -706,14 +790,67 @@ pub async fn fetch_driver_telemetry(
         drop(entry);
         state.fetch_driver_telemetry_cache.remove(&cache_key);
     }
+
+    info!(
+        "CACHE MISS for session {} driver {}, computing…",
+        session_key, driver_number
+    );
+
     // 1. Get latest lap for driver
     let laps_url = format!(
         "https://api.openf1.org/v1/laps?session_key={}&driver_number={}",
         session_key, driver_number
     );
-    let laps_res = state.http_client.get(laps_url).send().await.unwrap();
-    let laps_body = laps_res.text().await.unwrap();
-    let laps: Vec<Value> = serde_json::from_str(&laps_body).unwrap();
+
+    let laps_res = match state.http_client.get(&laps_url).send().await {
+        Ok(res) => res,
+        Err(e) => {
+            tracing::error!("Failed to fetch laps: {:?}", e);
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Failed to fetch laps from OpenF1 API"})),
+            )
+                .into_response();
+        }
+    };
+
+    let laps_body = match laps_res.text().await {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::error!("Failed to read laps response: {:?}", e);
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Failed to read laps response"})),
+            )
+                .into_response();
+        }
+    };
+
+    let laps: Vec<Value> = match serde_json::from_str(&laps_body) {
+        Ok(laps) => laps,
+        Err(e) => {
+            tracing::error!("Failed to parse laps JSON: {:?}", e);
+            tracing::debug!("Laps response body: {}", laps_body);
+
+            // Check if it's a rate limit error
+            if let Ok(error_obj) = serde_json::from_str::<Value>(&laps_body) {
+                if error_obj.get("error").is_some() {
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(json!({"error": "OpenF1 API rate limit exceeded", "details": error_obj})),
+                    )
+                        .into_response();
+                }
+            }
+
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Invalid response from OpenF1 API"})),
+            )
+                .into_response();
+        }
+    };
+
     // Filter for lap_duration < 120.0 and get latest date_start
     let mut filtered: Vec<&Value> = laps
         .iter()
@@ -725,11 +862,13 @@ pub async fn fetch_driver_telemetry(
                 && lap.get("date_start").and_then(|v| v.as_str()).is_some()
         })
         .collect();
+
     filtered.sort_by(|a, b| {
         let a_date = a.get("date_start").and_then(|v| v.as_str()).unwrap();
         let b_date = b.get("date_start").and_then(|v| v.as_str()).unwrap();
         b_date.cmp(a_date)
     });
+
     let latest_lap = match filtered.first() {
         Some(lap) => lap,
         None => {
@@ -740,27 +879,77 @@ pub async fn fetch_driver_telemetry(
                 .into_response();
         }
     };
+
     // Get date_start and lap_duration
-    let start = _parse_date(latest_lap["date_start"].as_str().unwrap()).unwrap();
+    let start = match _parse_date(latest_lap["date_start"].as_str().unwrap()) {
+        Some(date) => date,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to parse date"})),
+            )
+                .into_response();
+        }
+    };
+
     let lap_duration = latest_lap["lap_duration"].as_f64().unwrap();
     let end = start + Duration::milliseconds((lap_duration * 1000.0) as i64);
     let date_start_str = start.to_rfc3339();
     let date_end_str = end.to_rfc3339();
 
-    // 2. Fetch location data for this lap
-    let location_url = format!(
-        "https://api.openf1.org/v1/location?session_key={}&driver_number={}&date>{}&date<{}",
-        session_key, driver_number, date_start_str, date_end_str
+    // Use rate limiter for parallel requests
+    let rate_limiter = state.rate_limiter.clone();
+
+    // 2. Fetch location and car data in parallel
+    let (location_points, car_data_points) = tokio::join!(
+        fetch_location_data(
+            &state,
+            &rate_limiter,
+            session_key,
+            driver_number,
+            &date_start_str,
+            &date_end_str
+        ),
+        fetch_car_data(
+            &state,
+            &rate_limiter,
+            session_key,
+            driver_number,
+            &date_start_str,
+            &date_end_str
+        )
     );
-    let location_res = state.http_client.get(&location_url).send().await.unwrap();
-    let location_body = location_res.text().await.unwrap();
-    let mut location_points: Vec<Value> = serde_json::from_str(&location_body).unwrap();
+
+    let mut location_points = match location_points {
+        Ok(points) => points,
+        Err(e) => {
+            return e.into_response();
+        }
+    };
+
+    let mut car_data_points = match car_data_points {
+        Ok(points) => points,
+        Err(e) => {
+            return e.into_response();
+        }
+    };
+
+    if location_points.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "No location data found for this lap"})),
+        )
+            .into_response();
+    }
+
     // Sort by date
     location_points.sort_by(|a, b| a["date"].as_str().unwrap().cmp(b["date"].as_str().unwrap()));
+
     // Compute cumulative distance for each location point
     let mut cumulative = 0.0;
     let mut distances = Vec::with_capacity(location_points.len());
     distances.push(0.0);
+
     for i in 1..location_points.len() {
         let x1 = location_points[i - 1]["x"].as_f64().unwrap();
         let y1 = location_points[i - 1]["y"].as_f64().unwrap();
@@ -768,49 +957,192 @@ pub async fn fetch_driver_telemetry(
         let x2 = location_points[i]["x"].as_f64().unwrap();
         let y2 = location_points[i]["y"].as_f64().unwrap();
         let z2 = location_points[i]["z"].as_f64().unwrap();
+
         let d = ((x2 - x1).powi(2) + (y2 - y1).powi(2) + (z2 - z1).powi(2)).sqrt();
         cumulative += d;
         distances.push(cumulative);
     }
-    // 3. Fetch car_data for this lap
-    let car_data_url = format!(
-        "https://api.openf1.org/v1/car_data?session_key={}&driver_number={}&date>{}&date<{}",
-        session_key, driver_number, date_start_str, date_end_str
-    );
-    let car_data_res = state.http_client.get(&car_data_url).send().await.unwrap();
-    let car_data_body = car_data_res.text().await.unwrap();
-    let mut car_data_points: Vec<CarDataPoint> = from_str(&car_data_body).unwrap();
+
+    if car_data_points.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "No car data found for this lap"})),
+        )
+            .into_response();
+    }
+
     // Sort by date
     car_data_points.sort_by(|a, b| a.date.cmp(&b.date));
 
-    // 4. For each car_data point, find the closest location point by timestamp and assign its cumulative distance
+    // 4. For each car_data point, find the closest location point by timestamp
     let location_times: Vec<_> = location_points
         .iter()
-        .map(|p| _parse_date(p["date"].as_str().unwrap()).unwrap())
+        .filter_map(|p| _parse_date(p["date"].as_str().unwrap()))
         .collect();
+
     let mut result = Vec::with_capacity(car_data_points.len());
+
     for car_point in &car_data_points {
-        let car_time = _parse_date(&car_point.date).unwrap();
+        let car_time = match _parse_date(&car_point.date) {
+            Some(time) => time,
+            None => continue,
+        };
+
         // Find the closest location point
-        let (closest_idx, _) = location_times
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, loc_time)| {
-                (loc_time.timestamp_millis() - car_time.timestamp_millis()).abs()
-            })
-            .unwrap();
-        let distance = distances[closest_idx];
-        result.push(SpeedDistance {
-            speed: car_point.speed,
-            distance: distance / 10.0,
-        });
+        if let Some((closest_idx, _)) =
+            location_times
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, loc_time)| {
+                    (loc_time.timestamp_millis() - car_time.timestamp_millis()).abs()
+                })
+        {
+            let distance = distances[closest_idx];
+            result.push(SpeedDistance {
+                speed: car_point.speed,
+                distance: distance / 10.0,
+            });
+        }
     }
-    // save to database
+
+    if result.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Could not compute telemetry data"})),
+        )
+            .into_response();
+    }
+
+    // Save to cache
     state
         .fetch_driver_telemetry_cache
         .insert(cache_key, CacheEntry::new(result.clone(), TTL_SECONDS));
 
     (StatusCode::OK, Json(result)).into_response()
+}
+
+async fn fetch_location_data(
+    state: &Arc<AppState>,
+    rate_limiter: &RateLimiter,
+    session_key: i32,
+    driver_number: i32,
+    date_start_str: &str,
+    date_end_str: &str,
+) -> Result<Vec<Value>, impl IntoResponse> {
+    let _guard = rate_limiter.acquire().await;
+
+    let location_url = format!(
+        "https://api.openf1.org/v1/location?session_key={}&driver_number={}&date>{}&date<{}",
+        session_key, driver_number, date_start_str, date_end_str
+    );
+
+    let location_res = match state.http_client.get(&location_url).send().await {
+        Ok(res) => res,
+        Err(e) => {
+            tracing::error!("Failed to fetch location data: {:?}", e);
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Failed to fetch location data from OpenF1 API"})),
+            ));
+        }
+    };
+
+    let location_body = match location_res.text().await {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::error!("Failed to read location response: {:?}", e);
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Failed to read location response"})),
+            ));
+        }
+    };
+
+    match serde_json::from_str(&location_body) {
+        Ok(points) => Ok(points),
+        Err(e) => {
+            tracing::error!("Failed to parse location JSON: {:?}", e);
+            tracing::debug!("Location response body: {}", location_body);
+
+            if let Ok(error_obj) = serde_json::from_str::<Value>(&location_body) {
+                if error_obj.get("error").is_some() {
+                    return Err((
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(
+                            json!({"error": "OpenF1 API rate limit exceeded", "details": error_obj}),
+                        ),
+                    ));
+                }
+            }
+
+            Err((
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Invalid location response from OpenF1 API"})),
+            ))
+        }
+    }
+}
+
+async fn fetch_car_data(
+    state: &Arc<AppState>,
+    rate_limiter: &RateLimiter,
+    session_key: i32,
+    driver_number: i32,
+    date_start_str: &str,
+    date_end_str: &str,
+) -> Result<Vec<CarDataPoint>, impl IntoResponse> {
+    let _guard = rate_limiter.acquire().await;
+
+    let car_data_url = format!(
+        "https://api.openf1.org/v1/car_data?session_key={}&driver_number={}&date>{}&date<{}",
+        session_key, driver_number, date_start_str, date_end_str
+    );
+
+    let car_data_res = match state.http_client.get(&car_data_url).send().await {
+        Ok(res) => res,
+        Err(e) => {
+            tracing::error!("Failed to fetch car data: {:?}", e);
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Failed to fetch car data from OpenF1 API"})),
+            ));
+        }
+    };
+
+    let car_data_body = match car_data_res.text().await {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::error!("Failed to read car data response: {:?}", e);
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Failed to read car data response"})),
+            ));
+        }
+    };
+
+    match from_str(&car_data_body) {
+        Ok(points) => Ok(points),
+        Err(e) => {
+            tracing::error!("Failed to parse car data JSON: {:?}", e);
+            tracing::debug!("Car data response body: {}", car_data_body);
+
+            if let Ok(error_obj) = serde_json::from_str::<Value>(&car_data_body) {
+                if error_obj.get("error").is_some() {
+                    return Err((
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(
+                            json!({"error": "OpenF1 API rate limit exceeded", "details": error_obj}),
+                        ),
+                    ));
+                }
+            }
+
+            Err((
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Invalid car data response from OpenF1 API"})),
+            ))
+        }
+    }
 }
 
 pub async fn get_drivers_position_telemetry(
@@ -832,6 +1164,7 @@ pub async fn get_drivers_position_telemetry(
     }
 
     info!("CACHE MISS for session {}, computing…", session_key);
+    let _guard = state.rate_limiter.acquire().await;
 
     let laps_url = format!("https://api.openf1.org/v1/laps?session_key={}", session_key);
     let laps_resp = state.http_client.get(&laps_url).send().await.unwrap();
@@ -927,34 +1260,31 @@ pub async fn get_sector_timings(
 ) -> impl IntoResponse {
     let cache_key = format!("session_sector_timings_{}", session_key);
 
+    // Check cache
     if let Some(entry) = state.get_sector_timings_cache.get(&cache_key) {
         if !entry.is_expired() {
-            info!("CACHE HIT for session {} for sector timings", session_key);
+            tracing::info!("CACHE HIT for session {} sector timings", session_key);
             return (StatusCode::OK, Json(entry.value.clone())).into_response();
         }
-        info!(
-            "CACHE EXPIRED for session {} for sector timings recomputing…",
-            session_key
-        );
+        tracing::info!("CACHE EXPIRED for session {}, recomputing", session_key);
         drop(entry);
         state.get_sector_timings_cache.remove(&cache_key);
     }
-    info!(
-        "CACHE MISS for session {} for sector timings, computing…",
-        session_key
-    );
+    tracing::info!("CACHE MISS for session {}, computing", session_key);
 
-    // ✅ Get top 3 drivers from session_result
+    // Get top 3 drivers from session_result
     let result_url = format!(
         "https://api.openf1.org/v1/session_result?session_key={}&position<=3",
         session_key
     );
 
+    let _guard = state.rate_limiter.acquire().await;
+
     let result_body = match state.http_client.get(&result_url).send().await {
         Ok(r) => match r.text().await {
             Ok(text) => text,
             Err(e) => {
-                tracing::error!("Failed to read session_result response: {:?}", e);
+                tracing::error!("Failed to read session_result: {:?}", e);
                 return (
                     StatusCode::BAD_GATEWAY,
                     Json(json!({ "error": "Failed to read session_result" })),
@@ -972,20 +1302,17 @@ pub async fn get_sector_timings(
         }
     };
 
-    // Check if we got an error response instead of an array
     let session_results: Vec<Value> = match serde_json::from_str(&result_body) {
         Ok(results) => results,
         Err(e) => {
-            tracing::error!("Failed to parse session_result as array: {:?}", e);
+            tracing::error!("Failed to parse session_result: {:?}", e);
             tracing::debug!("Response body: {}", result_body);
 
-            // Check if it's a rate limit error
             if let Ok(error_obj) = serde_json::from_str::<Value>(&result_body) {
-                if error_obj.get("error").is_some() || error_obj.get("message").is_some() {
-                    tracing::warn!("OpenF1 API returned error: {:?}", error_obj);
+                if error_obj.get("error").is_some() {
                     return (
                         StatusCode::TOO_MANY_REQUESTS,
-                        Json(json!({ "error": "OpenF1 API rate limit or error", "details": error_obj })),
+                        Json(json!({"error": "OpenF1 API rate limit", "details": error_obj})),
                     )
                         .into_response();
                 }
@@ -999,112 +1326,59 @@ pub async fn get_sector_timings(
         }
     };
 
-    let mut response = Vec::new();
+    if session_results.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "No session results found" })),
+        )
+            .into_response();
+    }
 
-    // ✅ Process each top-3 driver with delays between requests
-    for (idx, driver) in session_results.iter().enumerate() {
-        // Add delay between requests to avoid rate limiting (except for first request)
-        if idx > 0 {
-            sleep(StdDuration::from_millis(300)).await; // 300ms delay between requests
-        }
+    // Process drivers concurrently with rate limiting
+    let mut tasks = Vec::new();
 
+    for driver in session_results.iter().take(3) {
         let position = match driver["position"].as_u64() {
             Some(p) => p as u32,
-            None => {
-                tracing::warn!("Missing position for driver: {:?}", driver);
-                continue;
-            }
+            None => continue,
         };
 
         let driver_number = match driver["driver_number"].as_u64() {
             Some(d) => d as u32,
-            None => {
-                tracing::warn!("Missing driver_number for driver: {:?}", driver);
-                continue;
-            }
+            None => continue,
         };
 
-        // ✅ Fetch all laps for this driver
-        let laps_url = format!(
-            "https://api.openf1.org/v1/laps?session_key={}&driver_number={}",
-            session_key, driver_number
-        );
+        let state_clone = state.clone();
+        let session_key_clone = session_key.clone();
 
-        let laps_body = match state.http_client.get(&laps_url).send().await {
-            Ok(r) => match r.text().await {
-                Ok(text) => text,
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to read laps response for driver {}: {:?}",
-                        driver_number,
-                        e
-                    );
-                    continue;
-                }
-            },
+        let task = tokio::spawn(async move {
+            fetch_driver_sector_data(&state_clone, &session_key_clone, driver_number, position)
+                .await
+        });
+
+        tasks.push(task);
+    }
+
+    // Collect results
+    let mut response = Vec::new();
+
+    for task in tasks {
+        match task.await {
+            Ok(Ok(sector_data)) => {
+                response.push(sector_data);
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("Failed to fetch driver sector data: {:?}", e);
+                // Continue with other drivers
+            }
             Err(e) => {
-                tracing::error!("Failed to fetch laps for driver {}: {:?}", driver_number, e);
-                continue;
+                tracing::error!("Task panicked: {:?}", e);
+                // Continue with other drivers
             }
-        };
-
-        let laps: Vec<Value> = match serde_json::from_str(&laps_body) {
-            Ok(laps) => laps,
-            Err(e) => {
-                tracing::error!("Failed to parse laps for driver {}: {:?}", driver_number, e);
-                tracing::debug!("Laps response body: {}", laps_body);
-                continue;
-            }
-        };
-
-        let fastest_lap_data = laps
-            .iter()
-            .filter_map(|lap| {
-                lap.get("lap_duration")
-                    .and_then(|v| v.as_f64())
-                    .map(|duration| (lap, duration))
-            })
-            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        let (lap, fastest_lap) = match fastest_lap_data {
-            Some((l, d)) => (l, d),
-            None => {
-                tracing::warn!("No valid lap duration found for driver {}", driver_number);
-                continue;
-            }
-        };
-
-        let sector_1 = lap
-            .get("duration_sector_1")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-
-        let sector_2 = lap
-            .get("duration_sector_2")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-
-        let sector_3 = lap
-            .get("duration_sector_3")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-
-        let entry = FastestLapSector {
-            position,
-            driver_number,
-            fastest_lap,
-            sector_1,
-            sector_2,
-            sector_3,
-        };
-        response.push(entry);
+        }
     }
 
     if response.is_empty() {
-        tracing::warn!(
-            "No sector timing data collected for session {}",
-            session_key
-        );
         return (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "No sector timing data available" })),
@@ -1112,7 +1386,10 @@ pub async fn get_sector_timings(
             .into_response();
     }
 
+    // Sort by position
     response.sort_by_key(|r| r.position);
+
+    // Cache the results
     state
         .get_sector_timings_cache
         .insert(cache_key, CacheEntry::new(response.clone(), TTL_SECONDS));
@@ -1282,6 +1559,7 @@ pub async fn compare_race_pace(
         "CACHE MISS for session {} for race pace, computing…",
         session
     );
+    let _guard = state.rate_limiter.acquire().await;
 
     let (s1, dur1) = get_fastest_lap(&state.http_client, &session, d1)
         .await
@@ -1305,4 +1583,135 @@ pub async fn compare_race_pace(
         .insert(cache_key, CacheEntry::new(result.clone(), TTL_SECONDS));
 
     Json(result)
+}
+
+async fn fetch_driver_sector_data(
+    state: &Arc<AppState>,
+    session_key: &str,
+    driver_number: u32,
+    position: u32,
+) -> Result<FastestLapSector, Box<dyn std::error::Error + Send + Sync>> {
+    // Acquire rate limit guard
+    let _guard = state.rate_limiter.acquire().await;
+
+    tracing::debug!(
+        "Fetching sector data for driver {} (position {})",
+        driver_number,
+        position
+    );
+
+    // Fetch all laps for this driver with timeout
+    let laps_url = format!(
+        "https://api.openf1.org/v1/laps?session_key={}&driver_number={}",
+        session_key, driver_number
+    );
+
+    let request_future = state.http_client.get(&laps_url).send();
+
+    let laps_res =
+        match tokio::time::timeout(tokio::time::Duration::from_secs(10), request_future).await {
+            Ok(Ok(res)) => res,
+            Ok(Err(e)) => {
+                tracing::error!("Failed to fetch laps for driver {}: {:?}", driver_number, e);
+                return Err(format!("Request failed: {}", e).into());
+            }
+            Err(_) => {
+                tracing::error!("Timeout fetching laps for driver {}", driver_number);
+                return Err("Request timeout".into());
+            }
+        };
+
+    // Check status code
+    let status = laps_res.status();
+    if !status.is_success() {
+        tracing::warn!(
+            "OpenF1 returned non-success status {} for driver {}",
+            status,
+            driver_number
+        );
+        return Err(format!("API returned status {}", status).into());
+    }
+
+    let laps_body = match laps_res.text().await {
+        Ok(text) => text,
+        Err(e) => {
+            tracing::error!(
+                "Failed to read laps response for driver {}: {:?}",
+                driver_number,
+                e
+            );
+            return Err(format!("Failed to read response: {}", e).into());
+        }
+    };
+
+    let laps: Vec<Value> = match serde_json::from_str(&laps_body) {
+        Ok(laps) => laps,
+        Err(e) => {
+            tracing::error!("Failed to parse laps for driver {}: {:?}", driver_number, e);
+            tracing::debug!("Laps response body: {}", laps_body);
+
+            // Check if it's a rate limit error
+            if let Ok(error_obj) = serde_json::from_str::<Value>(&laps_body) {
+                if error_obj.get("error").is_some() {
+                    return Err(format!("API error: {:?}", error_obj).into());
+                }
+            }
+
+            return Err(format!("Failed to parse JSON: {}", e).into());
+        }
+    };
+
+    if laps.is_empty() {
+        tracing::warn!("No laps found for driver {}", driver_number);
+        return Err("No laps found".into());
+    }
+
+    // Find fastest lap
+    let fastest_lap_data = laps
+        .iter()
+        .filter_map(|lap| {
+            lap.get("lap_duration")
+                .and_then(|v| v.as_f64())
+                .filter(|&d| d > 0.0 && d < 200.0) // Filter out invalid lap times
+                .map(|duration| (lap, duration))
+        })
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let (lap, fastest_lap) = match fastest_lap_data {
+        Some((l, d)) => (l, d),
+        None => {
+            tracing::warn!("No valid lap duration found for driver {}", driver_number);
+            return Err("No valid lap duration found".into());
+        }
+    };
+
+    let sector_1 = lap
+        .get("duration_sector_1")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    let sector_2 = lap
+        .get("duration_sector_2")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    let sector_3 = lap
+        .get("duration_sector_3")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    tracing::info!(
+        "Successfully fetched sector data for driver {} - fastest lap: {:.3}s",
+        driver_number,
+        fastest_lap
+    );
+
+    Ok(FastestLapSector {
+        position,
+        driver_number,
+        fastest_lap,
+        sector_1,
+        sector_2,
+        sector_3,
+    })
 }

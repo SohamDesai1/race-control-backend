@@ -6,7 +6,7 @@ use crate::{
             DriverLapGraph, FastestLapSector, PacePoint, QualifyingRankings, SpeedDistance,
         },
     },
-    utils::config::Config,
+    utils::{config::Config, rate_limiter::RateLimiter},
 };
 use dashmap::DashMap;
 use reqwest::Client;
@@ -22,4 +22,5 @@ pub struct AppState {
     pub get_sector_timings_cache: DashMap<String, CacheEntry<Vec<FastestLapSector>>>,
     pub get_race_pace_cache: DashMap<String, CacheEntry<Vec<PacePoint>>>,
     pub quali_session_cache: DashMap<String, CacheEntry<QualifyingRankings>>,
+    pub rate_limiter: RateLimiter,
 }

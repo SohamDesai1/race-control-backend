@@ -23,7 +23,7 @@ pub fn refresh_token_encode(email: String, secret: &str) -> String {
     let claims = RefreshClaims {
         sub: email,
         iat: now,
-        exp: now + 1 * 24 * 60 * 60,
+        exp: now + 15 * 24 * 60 * 60,
     };
 
     jsonwebtoken::encode(
