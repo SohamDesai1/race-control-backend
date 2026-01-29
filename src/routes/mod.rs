@@ -4,11 +4,11 @@ pub mod standings;
 pub mod users;
 use axum::{middleware::from_fn, response::IntoResponse, routing::get, Json, Router};
 use dashmap::DashMap;
-use http::StatusCode;
+use http::{Method, StatusCode, header};
 use serde_json::json;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use std::{error::Error, str::FromStr, sync::Arc};
-use tower_http::trace::TraceLayer;
+use std::{error::Error, str::FromStr, sync::Arc, time::Duration};
+use tower_http::{cors::{Any, CorsLayer}, trace::TraceLayer};
 use tracing::{info, Level};
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, Registry};
 pub use users::user_routes;
@@ -88,8 +88,25 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         get_drivers_position_telemetry_cache,
         get_sector_timings_cache,
         get_race_pace_cache,
-        quali_session_cache
+        quali_session_cache,
     });
+
+        let cors = CorsLayer::new()
+        .allow_origin(Any) // Allow any origin
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::PATCH,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::ACCEPT,
+            header::CONTENT_TYPE,
+        ])
+        .max_age(Duration::from_secs(3600));
 
     let value1 = state.clone();
     let value2 = state.clone();
@@ -112,6 +129,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
                 auth_middleware(axum::extract::State(value2.clone()), req, next)
             })),
         )
+        .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
     info!("Application initialized successfully");
