@@ -40,7 +40,7 @@ pub async fn get_sessions(
     "raceId",
     "sessionType",
     "date",
-    "time",
+    "time"::time AS time,
     "session_key",
     "meeting_key"
     FROM "Sessions"

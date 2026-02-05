@@ -144,7 +144,7 @@ pub async fn get_race_data(
             "raceId",
             "sessionType",
             "date",
-            "time",
+            "time"::time AS time,
             "session_key",
             "meeting_key"
             FROM "Sessions"
