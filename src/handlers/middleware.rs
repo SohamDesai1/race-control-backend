@@ -3,7 +3,7 @@ use axum::{
     middleware::Next,
     response::IntoResponse,
 };
-use http::{header, StatusCode};
+use http::{header, Method, StatusCode};
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use std::sync::Arc;
 
@@ -17,6 +17,10 @@ pub async fn auth_middleware(
     mut req: Request,
     next: Next,
 ) -> Result<impl IntoResponse, Error> {
+    if req.method() == Method::OPTIONS {
+        return Ok(next.run(req).await);
+    }
+
     let token = req
         .headers()
         .get(header::AUTHORIZATION)
