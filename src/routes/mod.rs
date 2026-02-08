@@ -21,7 +21,7 @@ use crate::{
     models::{
         cache::CacheEntry,
         telemetry::{
-            DriverLapGraph, FastestLapSector, PacePoint, QualifyingRankings, SpeedDistance,
+            DriverLapGraph, FastestLapSector, PacePoint, QualifyingRankings, SpeedDistanceThrottleGear
         },
     },
     routes::{race::race_routes, session::session_routes, standings::standings_routes},
@@ -76,7 +76,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         .expect("Failed to create HTTP client");
     info!("External clients initialized successfully");
 
-    let fetch_driver_telemetry_cache: DashMap<String, CacheEntry<Vec<SpeedDistance>>> =
+    let fetch_driver_telemetry_cache: DashMap<String, CacheEntry<Vec<SpeedDistanceThrottleGear>>> =
         DashMap::new();
     let get_drivers_position_telemetry_cache: DashMap<String, CacheEntry<Vec<DriverLapGraph>>> =
         DashMap::new();

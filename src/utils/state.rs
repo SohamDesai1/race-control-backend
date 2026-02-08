@@ -3,7 +3,7 @@ use crate::{
     models::{
         cache::CacheEntry,
         telemetry::{
-            DriverLapGraph, FastestLapSector, PacePoint, QualifyingRankings, SpeedDistance,
+            DriverLapGraph, FastestLapSector, PacePoint, QualifyingRankings, SpeedDistanceThrottleGear,
         },
     },
     utils::{config::Config, rate_limiter::RateLimiter},
@@ -17,7 +17,7 @@ pub struct AppState {
     pub db_pool: PgPool,
     pub config: Config,
     pub http_client: Client,
-    pub fetch_driver_telemetry_cache: DashMap<String, CacheEntry<Vec<SpeedDistance>>>,
+    pub fetch_driver_telemetry_cache: DashMap<String, CacheEntry<Vec<SpeedDistanceThrottleGear>>>,
     pub get_drivers_position_telemetry_cache: DashMap<String, CacheEntry<Vec<DriverLapGraph>>>,
     pub get_sector_timings_cache: DashMap<String, CacheEntry<Vec<FastestLapSector>>>,
     pub get_race_pace_cache: DashMap<String, CacheEntry<Vec<PacePoint>>>,

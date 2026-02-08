@@ -5,7 +5,7 @@ use crate::{
         telemetry::{
             CarDataPoint, DriverLapGraph, FastestLapSector, Lap, LapPosition, LapRecord,
             LocationPoint, PacePoint, PaceQuery, PositionRecord, QualifyingRanking,
-            QualifyingRankings, SpeedDistance,
+            QualifyingRankings, SpeedDistanceThrottleGear,
         },
     },
     utils::{race_utils::map_session_name, rate_limiter::RateLimiter, state::AppState},
@@ -998,9 +998,11 @@ pub async fn fetch_driver_telemetry(
                 })
         {
             let distance = distances[closest_idx];
-            result.push(SpeedDistance {
+            result.push(SpeedDistanceThrottleGear {
                 speed: car_point.speed,
                 distance: distance / 10.0,
+                throttle: car_point.throttle,
+                n_gear: car_point.n_gear
             });
         }
     }
