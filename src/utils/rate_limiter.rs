@@ -51,7 +51,7 @@ impl RateLimiter {
     }
 
     /// Get the current number of available permits
-    pub fn available_permits(&self) -> usize {
+    pub fn _available_permits(&self) -> usize {
         self.semaphore.available_permits()
     }
 }

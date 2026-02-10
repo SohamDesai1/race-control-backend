@@ -24,10 +24,25 @@ pub async fn get_race_results(
             "https://api.jolpi.ca/ergast/f1/2025/{round}/results/?format=json"
         ))
         .send()
-        .await
-        .unwrap();
-    let body = res.text().await.unwrap();
-    let res: Value = from_str(&body).unwrap();
+        .await;
+    
+    if res.is_err() {
+        tracing::error!("Route failed: get_race_results");
+    }
+    let res = res.unwrap();
+    
+    let body = res.text().await;
+    if body.is_err() {
+        tracing::error!("Route failed: get_race_results");
+    }
+    let body = body.unwrap();
+    
+    let res: Result<Value, _> = from_str(&body);
+    if res.is_err() {
+        tracing::error!("Route failed: get_race_results");
+    }
+    let res = res.unwrap();
+    
     let res_body = &res["MRData"]["RaceTable"]["Races"];
     (StatusCode::OK, Json(res_body)).into_response()
 }

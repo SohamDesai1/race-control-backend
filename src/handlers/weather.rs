@@ -30,11 +30,24 @@ pub async fn get_weather(
             "https://api.openf1.org/v1/weather?meeting_key={meeting_key}&session_key={session_key}"
         ))
         .send()
-        .await
-        .unwrap();
+        .await;
+    
+    if res.is_err() {
+        tracing::error!("Route failed: get_weather");
+    }
+    let res = res.unwrap();
 
-    let body = res.text().await.unwrap();
-    let res: Value = from_str(&body).unwrap();
+    let body = res.text().await;
+    if body.is_err() {
+        tracing::error!("Route failed: get_weather");
+    }
+    let body = body.unwrap();
+    
+    let res: Result<Value, _> = from_str(&body);
+    if res.is_err() {
+        tracing::error!("Route failed: get_weather");
+    }
+    let res = res.unwrap();
     let res_body = &res;
 
     (StatusCode::OK, Json(res_body)).into_response()

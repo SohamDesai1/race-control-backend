@@ -272,7 +272,7 @@ pub async fn get_session_data(
     Path(session_key): Path<String>,
 ) -> impl IntoResponse {
     let _guard = state.rate_limiter.acquire().await;
-    
+
     let url = format!(
         "https://api.openf1.org/v1/session_result?session_key={}",
         session_key
@@ -403,9 +403,9 @@ pub async fn get_quali_session_data(
         drop(entry);
         state.quali_session_cache.remove(&cache_key);
     }
-    
+
     let _guard = state.rate_limiter.acquire().await;
-    
+
     let res = state
         .http_client
         .get(format!(
@@ -417,8 +417,17 @@ pub async fn get_quali_session_data(
 
     match res {
         Ok(res) => {
-            let body: String = res.text().await.unwrap();
-            let res_body: Value = from_str(&body).unwrap();
+            let body = res.text().await;
+            if body.is_err() {
+                tracing::error!("Route failed: get_quali_session_data");
+            }
+            let body: String = body.unwrap();
+
+            let res_body: Result<Value, _> = from_str(&body);
+            if res_body.is_err() {
+                tracing::error!("Route failed: get_quali_session_data");
+            }
+            let res_body: Value = res_body.unwrap();
 
             let qualifying_results = match res_body["MRData"]["RaceTable"]["Races"]
                 .as_array()
@@ -582,7 +591,7 @@ pub async fn get_sprint_quali_session_data(
     Path(session_key): Path<String>,
 ) -> impl IntoResponse {
     let _guard = state.rate_limiter.acquire().await;
-    
+
     let res = state
         .http_client
         .get(format!(
@@ -593,8 +602,17 @@ pub async fn get_sprint_quali_session_data(
 
     match res {
         Ok(response) => {
-            let body: String = response.text().await.unwrap();
-            let res_body: Value = from_str(&body).unwrap();
+            let body = response.text().await;
+            if body.is_err() {
+                tracing::error!("Route failed: get_sprint_quali_session_data");
+            }
+            let body: String = body.unwrap();
+
+            let res_body: Result<Value, _> = from_str(&body);
+            if res_body.is_err() {
+                tracing::error!("Route failed: get_sprint_quali_session_data");
+            }
+            let res_body: Value = res_body.unwrap();
 
             // Extract meeting_key from the first result to fetch driver info
             let meeting_key = res_body
@@ -1002,7 +1020,7 @@ pub async fn fetch_driver_telemetry(
                 speed: car_point.speed,
                 distance: distance / 10.0,
                 throttle: car_point.throttle,
-                n_gear: car_point.n_gear
+                n_gear: car_point.n_gear,
             });
         }
     }
@@ -1169,9 +1187,23 @@ pub async fn get_drivers_position_telemetry(
     let _guard = state.rate_limiter.acquire().await;
 
     let laps_url = format!("https://api.openf1.org/v1/laps?session_key={}", session_key);
-    let laps_resp = state.http_client.get(&laps_url).send().await.unwrap();
-    let laps_body = laps_resp.text().await.unwrap();
-    let laps: Vec<LapRecord> = from_str(&laps_body).unwrap();
+    let laps_resp = state.http_client.get(&laps_url).send().await;
+    if laps_resp.is_err() {
+        tracing::error!("Route failed: get_drivers_position_telemetry");
+    }
+    let laps_resp = laps_resp.unwrap();
+
+    let laps_body = laps_resp.text().await;
+    if laps_body.is_err() {
+        tracing::error!("Route failed: get_drivers_position_telemetry");
+    }
+    let laps_body = laps_body.unwrap();
+
+    let laps: Result<Vec<LapRecord>, _> = from_str(&laps_body);
+    if laps.is_err() {
+        tracing::error!("Route failed: get_drivers_position_telemetry");
+    }
+    let laps: Vec<LapRecord> = laps.unwrap();
 
     let mut laps_by_driver: HashMap<u32, Vec<LapRecord>> = HashMap::new();
     for lap in laps {
@@ -1185,9 +1217,23 @@ pub async fn get_drivers_position_telemetry(
         "https://api.openf1.org/v1/position?session_key={}",
         session_key
     );
-    let positions_resp = state.http_client.get(&positions_url).send().await.unwrap();
-    let positions_body = positions_resp.text().await.unwrap();
-    let positions: Vec<PositionRecord> = from_str(&positions_body).unwrap();
+    let positions_resp = state.http_client.get(&positions_url).send().await;
+    if positions_resp.is_err() {
+        tracing::error!("Route failed: get_drivers_position_telemetry");
+    }
+    let positions_resp = positions_resp.unwrap();
+
+    let positions_body = positions_resp.text().await;
+    if positions_body.is_err() {
+        tracing::error!("Route failed: get_drivers_position_telemetry");
+    }
+    let positions_body = positions_body.unwrap();
+
+    let positions: Result<Vec<PositionRecord>, _> = from_str(&positions_body);
+    if positions.is_err() {
+        tracing::error!("Route failed: get_drivers_position_telemetry");
+    }
+    let positions: Vec<PositionRecord> = positions.unwrap();
 
     let mut positions_by_driver: HashMap<u32, Vec<PositionRecord>> = HashMap::new();
     for pos in positions {
@@ -1359,6 +1405,7 @@ pub async fn get_sector_timings(
         });
 
         tasks.push(task);
+        sleep(TokioDuration::from_millis(300)).await;
     }
 
     // Collect results
