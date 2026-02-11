@@ -12,39 +12,90 @@ use axum::{
 use chrono::{Datelike, Utc};
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
+use tracing::info;
 
 pub async fn get_race_results(
     State(state): State<Arc<AppState>>,
     round: Option<Path<String>>,
 ) -> impl IntoResponse {
     let round = round.map(|Path(r)| r).unwrap_or_else(|| "last".to_string());
-    let res = state
-        .http_client
-        .get(format!(
-            "https://api.jolpi.ca/ergast/f1/2025/{round}/results/?format=json"
-        ))
-        .send()
-        .await;
-    
-    if res.is_err() {
-        tracing::error!("Route failed: get_race_results");
+
+    let now = chrono::Utc::now();
+    let mut year = now.year();
+    if now.month() <= 2 {
+        year -= 1;
     }
-    let res = res.unwrap();
-    
-    let body = res.text().await;
-    if body.is_err() {
-        tracing::error!("Route failed: get_race_results");
+
+    let url = format!("https://api.jolpi.ca/ergast/f1/{year}/{round}/results/?format=json");
+
+    let res = match state.http_client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("API request failed: {:?}", e);
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Failed to fetch race results"})),
+            )
+                .into_response();
+        }
+    };
+
+    let body = match res.text().await {
+        Ok(text) => text,
+        Err(e) => {
+            tracing::error!("Failed reading body: {:?}", e);
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Failed to read API response"})),
+            )
+                .into_response();
+        }
+    };
+
+    let parsed: Value = match serde_json::from_str(&body) {
+        Ok(val) => val,
+        Err(e) => {
+            tracing::error!("JSON parse error: {:?}", e);
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Invalid JSON from API"})),
+            )
+                .into_response();
+        }
+    };
+
+    let races = &parsed["MRData"]["RaceTable"]["Races"];
+
+    if !races.is_array() || races.as_array().unwrap().is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "No race results found"})),
+        )
+            .into_response();
     }
-    let body = body.unwrap();
-    
-    let res: Result<Value, _> = from_str(&body);
-    if res.is_err() {
-        tracing::error!("Route failed: get_race_results");
-    }
-    let res = res.unwrap();
-    
-    let res_body = &res["MRData"]["RaceTable"]["Races"];
-    (StatusCode::OK, Json(res_body)).into_response()
+
+    let race = &races[0];
+    info!(
+        "year: {}, round: {}",
+        year.to_string(),
+        race["round"].as_str().unwrap_or_default()
+    );
+    // ---- Fetch DB id safely ----
+    let db_id: Option<i64> = sqlx::query_scalar(
+        r#"
+        SELECT id
+        FROM "Races"
+        WHERE season = $1 AND round = $2
+        "#,
+    )
+    .bind(year.to_string())
+    .bind(race["round"].as_str().unwrap_or_default())
+    .fetch_optional(&state.db_pool)
+    .await
+    .ok()
+    .flatten();
+
+    (StatusCode::OK, Json(json!({"id": db_id,"race": race}))).into_response()
 }
 
 pub async fn get_all_races_data_db(
