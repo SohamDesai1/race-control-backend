@@ -18,6 +18,7 @@ use axum::{
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
+use sqlx::prelude::FromRow;
 
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::{collections::HashMap, sync::Arc};
@@ -271,101 +272,233 @@ pub async fn get_session_data(
     State(state): State<Arc<AppState>>,
     Path(session_key): Path<String>,
 ) -> impl IntoResponse {
-    let _guard = state.rate_limiter.acquire().await;
+    #[derive(FromRow)]
+    struct SessionWithRace {
+        session_type: String,
+        session_key: Option<i32>,
+        meeting_key: Option<i32>,
+        season: String,
+        round: String,
+    }
 
-    let url = format!(
+    let session_info = sqlx::query_as::<_, SessionWithRace>(
+        r#"
+        SELECT 
+            s."sessionType" as session_type,
+            s.session_key,
+            s.meeting_key,
+            r.season,
+            r.round
+        FROM "Sessions" s
+        INNER JOIN "Races" r ON s."raceId" = r.id
+        WHERE s.session_key = $1
+        "#,
+    )
+    .bind(session_key.parse::<i32>().unwrap_or(0))
+    .fetch_optional(&state.db_pool)
+    .await;
+
+    let session = match session_info {
+        Ok(Some(s)) => s,
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Session not found"})),
+            )
+                .into_response();
+        }
+    };
+
+    let openf1_url = format!(
         "https://api.openf1.org/v1/session_result?session_key={}",
         session_key
     );
 
-    // Add timeout to prevent hanging requests
-    let request_future = state.http_client.get(&url).send();
+    let request_future = state.http_client.get(&openf1_url).send();
 
-    let res = match timeout(tokio::time::Duration::from_secs(10), request_future).await {
-        Ok(Ok(response)) => response,
-        Ok(Err(e)) => {
-            tracing::error!("Failed to fetch session data: {:?}", e);
-
-            if e.is_connect() {
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    Json(json!({
-                        "error": "Failed to connect to OpenF1 API",
-                        "details": "Network connection error or DNS resolution failure"
-                    })),
-                )
-                    .into_response();
-            } else if e.is_timeout() {
-                return (
-                    StatusCode::GATEWAY_TIMEOUT,
-                    Json(json!({"error": "Request to OpenF1 API timed out"})),
-                )
-                    .into_response();
-            } else {
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    Json(json!({"error": "Failed to fetch session data"})),
-                )
-                    .into_response();
-            }
+    let openf1_response = match timeout(std::time::Duration::from_secs(10), request_future).await {
+        Ok(Ok(res)) if res.status().is_success() => res,
+        _ => {
+            // fallback immediately
+            return ergast_fallback(
+                state,
+                &session.season,
+                &session.round,
+                &session.session_type,
+                session.session_key,
+                session.meeting_key,
+            )
+            .await;
         }
+    };
+
+    let body = match openf1_response.text().await {
+        Ok(b) => b,
         Err(_) => {
-            tracing::error!("Request to OpenF1 API timed out after 10 seconds");
+            return ergast_fallback(
+                state,
+                &session.season,
+                &session.round,
+                &session.session_type,
+                session.session_key,
+                session.meeting_key,
+            )
+            .await;
+        }
+    };
+
+    let parsed: Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(_) => {
+            return ergast_fallback(
+                state,
+                &session.season,
+                &session.round,
+                &session.session_type,
+                session.session_key,
+                session.meeting_key,
+            )
+            .await;
+        }
+    };
+
+    // Inject keys into OpenF1 response
+    let enriched = if let Some(array) = parsed.as_array() {
+        let transformed: Vec<Value> = array
+            .iter()
+            .map(|item| {
+                json!({
+                    "driver_number": item["driver_number"],
+                    "position": item["position"],
+                    "points": item["points"],
+                    "duration": item["duration"],
+                    "gap_to_leader": item["gap_to_leader"],
+                    "dnf": item["dnf"],
+                    "dns": item["dns"],
+                    "dsq": item["dsq"],
+                    "meeting_key": session.meeting_key,
+                    "number_of_laps": item["number_of_laps"],
+                    "session_key": session.session_key
+                })
+            })
+            .collect();
+
+        json!(transformed)
+    } else {
+        parsed
+    };
+
+    (StatusCode::OK, Json(enriched)).into_response()
+}
+
+async fn ergast_fallback(
+    state: Arc<AppState>,
+    year: &str,
+    round: &str,
+    session_type: &str,
+    session_key: Option<i32>,
+    meeting_key: Option<i32>,
+) -> axum::response::Response {
+    let endpoint = match session_type.to_lowercase().as_str() {
+        "race" => "results",
+        "qualifying" => "qualifying",
+        "sprint" => "sprint",
+        _ => {
             return (
-                StatusCode::GATEWAY_TIMEOUT,
-                Json(json!({"error": "Request timed out"})),
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Unsupported session type"})),
             )
                 .into_response();
         }
     };
 
-    let status = res.status();
-    if !status.is_success() {
-        tracing::warn!("OpenF1 API returned status: {}", status);
+    let url = format!(
+        "https://api.jolpi.ca/ergast/f1/{}/{}/{}?format=json",
+        year, round, endpoint
+    );
 
-        return match status.as_u16() {
-            404 => (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "Session not found", "session_key": session_key})),
-            ),
-            429 => (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(json!({"error": "OpenF1 API rate limit exceeded"})),
-            ),
-            _ => (
+    let res = match state.http_client.get(&url).send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => {
+            return (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({"error": "OpenF1 API returned error", "status": status.as_u16()})),
-            ),
+                Json(json!({"error": "Fallback API failed"})),
+            )
+                .into_response();
         }
-        .into_response();
-    }
+    };
 
     let body = match res.text().await {
-        Ok(text) => text,
-        Err(e) => {
-            tracing::error!("Failed to read response: {:?}", e);
+        Ok(b) => b,
+        Err(_) => {
             return (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({"error": "Failed to read response"})),
+                Json(json!({"error": "Failed to read fallback response"})),
             )
                 .into_response();
         }
     };
 
-    let session_data: Value = match from_str(&body) {
-        Ok(data) => data,
-        Err(e) => {
-            tracing::error!("Failed to parse JSON: {:?}", e);
-            tracing::debug!("Response: {}", body);
+    let parsed: Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(_) => {
             return (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({"error": "Invalid response format"})),
+                Json(json!({"error": "Invalid fallback JSON"})),
             )
                 .into_response();
         }
     };
 
-    (StatusCode::OK, Json(session_data)).into_response()
+    let mut result_vec = Vec::new();
+
+    let races = &parsed["MRData"]["RaceTable"]["Races"];
+    if !races.is_array() || races.as_array().unwrap().is_empty() {
+        return (StatusCode::OK, Json(json!(result_vec))).into_response();
+    }
+
+    let results = &races[0]["Results"];
+    if !results.is_array() {
+        return (StatusCode::OK, Json(json!(result_vec))).into_response();
+    }
+
+    let results_array = results.as_array().unwrap();
+
+    let leader_time_ms = results_array
+        .first()
+        .and_then(|r| r["Time"]["millis"].as_str())
+        .and_then(|m| m.parse::<f64>().ok());
+
+    for r in results_array {
+        let status = r["status"].as_str().unwrap_or("");
+
+        let millis = r["Time"]["millis"]
+            .as_str()
+            .and_then(|m| m.parse::<f64>().ok());
+
+        let duration_seconds = millis.map(|m| m / 1000.0);
+
+        let gap = match (leader_time_ms, millis) {
+            (Some(leader), Some(current)) => Some((current - leader) / 1000.0),
+            _ => None,
+        };
+
+        result_vec.push(json!({
+            "driver_number": r["number"].as_str().and_then(|n| n.parse::<i32>().ok()),
+            "position": r["position"].as_str().and_then(|p| p.parse::<i32>().ok()),
+            "points": r["points"].as_str().and_then(|p| p.parse::<f64>().ok()),
+            "duration": duration_seconds,
+            "gap_to_leader": gap,
+            "dnf": status == "Retired",
+            "dns": r["laps"].as_str() == Some("0"),
+            "dsq": status == "Disqualified",
+            "meeting_key": meeting_key,
+            "number_of_laps": r["laps"].as_str().and_then(|l| l.parse::<i32>().ok()),
+            "session_key": session_key
+        }));
+    }
+
+    (StatusCode::OK, Json(json!(result_vec))).into_response()
 }
 
 fn _parse_lap_time(time_str: &str) -> Option<f64> {
@@ -862,8 +995,8 @@ pub async fn fetch_driver_telemetry(
             }
 
             return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({"error": "Invalid response from OpenF1 API"})),
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "A session is ongoing please try again later"})),
             )
                 .into_response();
         }
