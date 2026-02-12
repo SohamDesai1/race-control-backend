@@ -7,19 +7,21 @@ pub struct CarDataPoint {
     pub date: String,
     pub session_key: u32,
     pub driver_number: u32,
-    pub throttle: Option<f64>,
+    pub throttle: f64,
     pub meeting_key: u32,
     pub brake: Option<f64>,
-    pub n_gear: Option<u32>,
+    pub n_gear: f64,
     pub rpm: Option<u32>,
     pub speed: f64,
     pub drs: Option<u32>,
 }
 
 #[derive(Serialize, Clone)]
-pub struct SpeedDistance {
+pub struct SpeedDistanceThrottleGear {
     pub speed: f64,
     pub distance: f64,
+    pub throttle: f64,
+    pub n_gear: f64
 }
 
 #[derive(Debug, Deserialize, Clone)]

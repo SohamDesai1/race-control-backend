@@ -28,10 +28,24 @@ pub async fn driver_standings(
         .await;
     match res {
         Ok(res) => {
-            let body = res.text().await.unwrap();
-            let res: Value = from_str(&body).unwrap();
+            let body = res.text().await;
+            if body.is_err() {
+                tracing::error!("Route failed: driver_standings");
+            }
+            let body = body.unwrap();
+            
+            let res: Result<Value, _> = from_str(&body);
+            if res.is_err() {
+                tracing::error!("Route failed: driver_standings");
+            }
+            let res = res.unwrap();
+            
             let res_body = &res["MRData"]["StandingsTable"]["StandingsLists"];
-            if res_body.as_array().unwrap().is_empty() {
+            let arr = res_body.as_array();
+            if arr.is_none() {
+                tracing::error!("Route failed: driver_standings");
+            }
+            if arr.unwrap().is_empty() {
                 return (StatusCode::OK, Json(json!([]))).into_response();
             }
             (StatusCode::OK, Json(&res_body[0]["DriverStandings"])).into_response()
@@ -65,10 +79,24 @@ pub async fn constructor_standings(
         .await;
     match res {
         Ok(res) => {
-            let body = res.text().await.unwrap();
-            let res: Value = from_str(&body).unwrap();
+            let body = res.text().await;
+            if body.is_err() {
+                tracing::error!("Route failed: constructor_standings");
+            }
+            let body = body.unwrap();
+            
+            let res: Result<Value, _> = from_str(&body);
+            if res.is_err() {
+                tracing::error!("Route failed: constructor_standings");
+            }
+            let res = res.unwrap();
+            
             let res_body = &res["MRData"]["StandingsTable"]["StandingsLists"];
-            if res_body.as_array().unwrap().is_empty() {
+            let arr = res_body.as_array();
+            if arr.is_none() {
+                tracing::error!("Route failed: constructor_standings");
+            }
+            if arr.unwrap().is_empty() {
                 return (StatusCode::OK, Json(json!([]))).into_response();
             }
             (StatusCode::OK, Json(&res_body[0]["ConstructorStandings"])).into_response()

@@ -62,10 +62,10 @@ pub async fn get_news(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                         }
                     }
                 }
-                Err(e) => tracing::warn!("Failed to read NewsAPI response: {:?}", e),
+                Err(e) => tracing::error!("Route failed: get_news - {:?}", e),
             }
         }
-        Err(e) => tracing::warn!("Failed to fetch from NewsAPI: {:?}", e),
+        Err(e) => tracing::error!("Route failed: get_news - {:?}", e),
     }
 
     // Fetch from WorldNewsAPI
@@ -95,10 +95,10 @@ pub async fn get_news(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                         }
                     }
                 }
-                Err(e) => tracing::warn!("Failed to read WorldNewsAPI response: {:?}", e),
+                Err(e) => tracing::error!("Route failed: get_news - {:?}", e),
             }
         }
-        Err(e) => tracing::warn!("Failed to fetch from WorldNewsAPI: {:?}", e),
+        Err(e) => tracing::error!("Route failed: get_news - {:?}", e),
     }
 
     // Cache the results
