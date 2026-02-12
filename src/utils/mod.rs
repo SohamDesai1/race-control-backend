@@ -4,3 +4,4 @@ pub mod config;
 pub mod jwt_encode;
 pub mod race_utils;
 pub mod rate_limiter;
+pub mod db_init;

@@ -99,6 +99,9 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         rate_limiter,
     });
 
+    // Initialize database (fetch and seed race data if empty)
+    crate::utils::db_init::initialize_database(&state).await;
+
         let cors = CorsLayer::new()
         .allow_origin(Any) // Allow any origin
         .allow_methods([
