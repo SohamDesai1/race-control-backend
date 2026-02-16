@@ -1,8 +1,9 @@
-pub mod users;
 pub mod auth;
+pub mod fantasy;
 pub mod middleware;
+pub mod news;
 pub mod race;
 pub mod session;
 pub mod standings;
+pub mod users;
 pub mod weather;
-pub mod news;
