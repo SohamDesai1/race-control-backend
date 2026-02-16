@@ -1,14 +1,18 @@
+pub mod fantasy;
 pub mod race;
 pub mod session;
 pub mod standings;
 pub mod users;
 use axum::{middleware::from_fn, response::IntoResponse, routing::get, Json, Router};
 use dashmap::DashMap;
-use http::{Method, StatusCode, header};
+use http::{header, Method, StatusCode};
 use serde_json::json;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::{error::Error, str::FromStr, sync::Arc, time::Duration};
-use tower_http::{cors::{Any, CorsLayer}, trace::TraceLayer};
+use tower_http::{
+    cors::{Any, CorsLayer},
+    trace::TraceLayer,
+};
 use tracing::{info, Level};
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, Registry};
 
@@ -21,10 +25,14 @@ use crate::{
     models::{
         cache::CacheEntry,
         telemetry::{
-            DriverLapGraph, FastestLapSector, PacePoint, QualifyingRankings, SpeedDistanceThrottleGear
+            DriverLapGraph, FastestLapSector, PacePoint, QualifyingRankings,
+            SpeedDistanceThrottleGear,
         },
     },
-    routes::{race::race_routes, session::session_routes, standings::standings_routes},
+    routes::{
+        fantasy::fantasy_routes, race::race_routes, session::session_routes,
+        standings::standings_routes,
+    },
     utils::{config::Config, rate_limiter::RateLimiter, state::AppState},
 };
 
@@ -99,7 +107,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         rate_limiter,
     });
 
-        let cors = CorsLayer::new()
+    let cors = CorsLayer::new()
         .allow_origin(Any) // Allow any origin
         .allow_methods([
             Method::GET,
@@ -109,11 +117,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
             Method::PATCH,
             Method::OPTIONS,
         ])
-        .allow_headers([
-            header::AUTHORIZATION,
-            header::ACCEPT,
-            header::CONTENT_TYPE,
-        ])
+        .allow_headers([header::AUTHORIZATION, header::ACCEPT, header::CONTENT_TYPE])
         .max_age(Duration::from_secs(3600));
 
     let value1 = state.clone();
@@ -125,6 +129,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         .nest("/race", race_routes(state.clone()))
         .nest("/session", session_routes(state.clone()))
         .nest("/standings", standings_routes(state.clone()))
+        .nest("/fantasy", fantasy_routes(state.clone()))
         .route(
             "/get_weather",
             get(get_weather).route_layer(from_fn(move |req, next| {
