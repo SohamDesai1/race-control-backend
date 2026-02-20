@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let addr = format!("0.0.0.0:{}", port);
 
     let listener = TcpListener::bind(&addr).await?;
-    println!("Listening on {}", addr);
+    println!("✓ Listening on {}", addr);
     serve(listener, app).await?;
     Ok(())
 }

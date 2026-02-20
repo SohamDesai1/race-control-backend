@@ -67,17 +67,24 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         .ssl_mode(PgSslMode::Require);
 
     // Create database connection pool
+    info!("Creating database connection pool...");
     let db_pool = PgPoolOptions::new()
         .max_connections(5)
         .min_connections(1)
         .acquire_timeout(std::time::Duration::from_secs(10))
         .idle_timeout(Some(std::time::Duration::from_secs(60)))
         .connect_with(connect_options)
-        .await?;
+        .await
+        .map_err(|e| {
+            eprintln!("Database connection failed: {:?}", e);
+            e
+        })?;
     info!("Database connection pool created successfully");
 
+    info!("Running database migrations...");
     if let Err(e) = sqlx::migrate!("./migrations").run(&db_pool).await {
         eprintln!("Migration error: {:?}", e);
+        return Err(format!("Failed to run migrations: {:?}", e).into());
     }
 
     info!("Database migrations run successfully");
