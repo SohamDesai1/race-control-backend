@@ -29,11 +29,18 @@ FROM debian:bookworm-slim
 WORKDIR /app
 
 # Install runtime dependencies
-RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y libssl3 ca-certificates postgresql-client curl && rm -rf /var/lib/apt/lists/*
+
+# Install sqlx-cli
+RUN curl -L https://github.com/launchbadge/sqlx-cli/releases/download/v0.7.3/sqlx-cli-v0.7.3-x86_64-unknown-linux-musl.tar.gz | tar xz -C /usr/local/bin
 
 # Copy binary from builder
 COPY --from=builder /app/target/release/backend ./backend
 
+# Copy migrations
+COPY migrations ./migrations
+
 EXPOSE 3000
 
-CMD ["./backend"]
+# Run migrations and then start the app
+CMD sh -c "sqlx migrate run && ./backend"
