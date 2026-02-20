@@ -10,8 +10,8 @@ pub async fn initialize_database(state: &Arc<AppState>) {
     
     // Calculate previous year
     let year = chrono::Utc::now().year() - 1;
-    let start_date = format!("{}-01-01", year);
-    let end_date = format!("{}-12-31", year);
+    let _start_date = format!("{}-01-01", year);
+    let _end_date = format!("{}-12-31", year);
     
     // Check if we already have data for this year
     let row: (i64,) = match sqlx::query_as(
