@@ -4,11 +4,14 @@ pub mod standings;
 pub mod users;
 use axum::{middleware::from_fn, response::IntoResponse, routing::get, Json, Router};
 use dashmap::DashMap;
-use http::{Method, StatusCode, header};
+use http::{header, Method, StatusCode};
 use serde_json::json;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use std::{error::Error, str::FromStr, sync::Arc, time::Duration};
-use tower_http::{cors::{Any, CorsLayer}, trace::TraceLayer};
+use tower_http::{
+    cors::{Any, CorsLayer},
+    trace::TraceLayer,
+};
 use tracing::{info, Level};
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, Registry};
 
@@ -21,7 +24,8 @@ use crate::{
     models::{
         cache::CacheEntry,
         telemetry::{
-            DriverLapGraph, FastestLapSector, PacePoint, QualifyingRankings, SpeedDistanceThrottleGear
+            DriverLapGraph, FastestLapSector, PacePoint, QualifyingRankings,
+            SpeedDistanceThrottleGear,
         },
     },
     routes::{race::race_routes, session::session_routes, standings::standings_routes},
@@ -58,7 +62,10 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
     let config = Config::init();
 
     info!("Configuration loaded successfully");
-    let connect_options = PgConnectOptions::from_str(&config.db_url)?.statement_cache_capacity(0);
+    let connect_options = PgConnectOptions::from_str(&config.db_url)?
+        .statement_cache_capacity(0)
+        .ssl_mode(PgSslMode::Require);
+
     // Create database connection pool
     let db_pool = PgPoolOptions::new()
         .max_connections(5)
@@ -67,8 +74,14 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         .idle_timeout(Some(std::time::Duration::from_secs(60)))
         .connect_with(connect_options)
         .await?;
-
     info!("Database connection pool created successfully");
+
+    if let Err(e) = sqlx::migrate!("./migrations").run(&db_pool).await {
+        eprintln!("Migration error: {:?}", e);
+    }
+
+    info!("Database migrations run successfully");
+
     let http_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(10))
@@ -99,7 +112,10 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         rate_limiter,
     });
 
-        let cors = CorsLayer::new()
+    // Initialize database (fetch and seed race data if empty)
+    crate::utils::db_init::initialize_database(&state).await;
+
+    let cors = CorsLayer::new()
         .allow_origin(Any) // Allow any origin
         .allow_methods([
             Method::GET,
@@ -109,11 +125,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
             Method::PATCH,
             Method::OPTIONS,
         ])
-        .allow_headers([
-            header::AUTHORIZATION,
-            header::ACCEPT,
-            header::CONTENT_TYPE,
-        ])
+        .allow_headers([header::AUTHORIZATION, header::ACCEPT, header::CONTENT_TYPE])
         .max_age(Duration::from_secs(3600));
 
     let value1 = state.clone();

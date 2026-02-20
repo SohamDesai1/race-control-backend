@@ -13,8 +13,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Bind to a TCP listener
     let app = make_app().await?;
-    let listener = TcpListener::bind("0.0.0.0:3000").await?;
-    println!("Listening on port 3000");
+    let port = std::env::var("PORT")
+        .unwrap_or_else(|_| "3000".to_string())
+        .parse::<u16>()
+        .expect("Invalid PORT");
+
+    let addr = format!("0.0.0.0:{}", port);
+
+    let listener = TcpListener::bind(&addr).await?;
+    println!("Listening on {}", addr);
     serve(listener, app).await?;
     Ok(())
 }
