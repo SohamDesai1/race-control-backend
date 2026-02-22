@@ -12,14 +12,14 @@ use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{extract::State, response::IntoResponse, Json};
 use http::StatusCode;
 use jsonwebtoken::{DecodingKey, Validation};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 pub async fn register(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
     tracing::debug!("Registration attempt for email: {}", payload["email"]);
-    
+
     if payload["password"].as_str().is_none() {
         tracing::warn!("Registration failed: password is missing");
         return (
@@ -32,7 +32,11 @@ pub async fn register(
     let hashed = match hash_password(payload["password"].as_str().unwrap()) {
         Ok(hashed) => hashed,
         Err(e) => {
-            tracing::error!("Password hashing error for email {}: {:?}", payload["email"], e);
+            tracing::error!(
+                "Password hashing error for email {}: {:?}",
+                payload["email"],
+                e
+            );
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": "Failed to hash password"})),
@@ -42,23 +46,23 @@ pub async fn register(
     };
 
     let name = payload["name"].as_str().unwrap_or_else(|| {
-    tracing::warn!("Registration attempt missing name field");
-    "Unknown"
-});
-let username = payload["username"].as_str().unwrap_or_else(|| {
-    tracing::warn!("Registration attempt missing username field");
-    "unknown"
-});
-let email = payload["email"].as_str().unwrap_or_else(|| {
-    tracing::warn!("Registration attempt missing email field");
-    "unknown@example.com"
-});
-let dob = payload["dob"].as_str().unwrap_or_else(|| {
-    tracing::warn!("Registration attempt missing date of birth field");
-    "1970-01-01"
-});
+        tracing::warn!("Registration attempt missing name field");
+        "Unknown"
+    });
+    let username = payload["username"].as_str().unwrap_or_else(|| {
+        tracing::warn!("Registration attempt missing username field");
+        "unknown"
+    });
+    let email = payload["email"].as_str().unwrap_or_else(|| {
+        tracing::warn!("Registration attempt missing email field");
+        "unknown@example.com"
+    });
+    let dob = payload["dob"].as_str().unwrap_or_else(|| {
+        tracing::warn!("Registration attempt missing date of birth field");
+        "1970-01-01"
+    });
 
-let response = sqlx::query_as::<_, User>(
+    let response = sqlx::query_as::<_, User>(
         r#"
         INSERT INTO "Users" (name, username, email, dob, hashed_password, auth_provider)
         VALUES ($1, $2, $3, $4, $5, $6)
@@ -77,7 +81,16 @@ let response = sqlx::query_as::<_, User>(
     match response {
         Ok(user) => {
             tracing::info!("User registered successfully",);
-            // Create a sanitized version without the password hash
+
+            let token = jwt_encode(
+                payload["email"].to_string(),
+                state.config.jwt_secret.as_ref(),
+            );
+            let refresh_token = refresh_token_encode(
+                payload["email"].to_string(),
+                state.config.jwt_secret.as_ref(),
+            );
+
             let user_response = json!({
                 "name": user.name,
                 "username": user.username,
@@ -91,14 +104,20 @@ let response = sqlx::query_as::<_, User>(
                 Json(json!({
                     "message": "User registered",
                     "data": {
-                        "user": user_response
+                        "user": user_response,
+                        "access_token": token,
+                        "refresh_token": refresh_token
                     }
                 })),
             )
                 .into_response()
         }
         Err(e) => {
-            tracing::error!("Database error during registration for email {}: {:?}", email, e);
+            tracing::error!(
+                "Database error during registration for email {}: {:?}",
+                email,
+                e
+            );
 
             // Check for specific database errors
             if let Some(db_err) = e.as_database_error() {
@@ -129,7 +148,7 @@ pub async fn login(
 ) -> impl IntoResponse {
     let email = payload["email"].as_str().unwrap_or_default();
     let password = payload["password"].as_str().unwrap_or_default();
-    
+
     tracing::debug!("Login attempt for email: {}", email);
 
     let response = sqlx::query_as::<_, User>(
@@ -165,9 +184,14 @@ pub async fn login(
                 .is_ok()
             {
                 tracing::info!("User login successful: {}", email);
-                let token = jwt_encode(payload["email"].to_string(), state.config.jwt_secret.as_ref());
-                let refresh_token =
-                    refresh_token_encode(payload["email"].to_string(), state.config.jwt_secret.as_ref());
+                let token = jwt_encode(
+                    payload["email"].to_string(),
+                    state.config.jwt_secret.as_ref(),
+                );
+                let refresh_token = refresh_token_encode(
+                    payload["email"].to_string(),
+                    state.config.jwt_secret.as_ref(),
+                );
 
                 (
                     StatusCode::OK,
@@ -222,9 +246,9 @@ pub async fn refresh_token_handler(
         )
             .into_response();
     }
-    
+
     tracing::debug!("Token refresh attempt");
-    
+
     let token_data: Result<jsonwebtoken::TokenData<RefreshClaims>, jsonwebtoken::errors::Error> =
         jsonwebtoken::decode::<RefreshClaims>(
             refresh_token,
