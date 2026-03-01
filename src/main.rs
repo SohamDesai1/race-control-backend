@@ -12,7 +12,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     dotenv::dotenv().ok();
 
     // Bind to a TCP listener
-    let app = make_app().await?;
+    let app = match make_app().await {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("FATAL: Failed to initialize app: {:?}", e);
+            std::process::exit(1);
+        }
+    };
     let port = std::env::var("PORT")
         .unwrap_or_else(|_| "3000".to_string())
         .parse::<u16>()
