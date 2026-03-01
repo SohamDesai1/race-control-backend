@@ -22,11 +22,12 @@ pub async fn get_race_results(
 
     let now = chrono::Utc::now();
     let mut year = now.year();
-    if now.month() <= 2 {
+    if now.month() < 3 || (now.month() == 3 && now.day() < 8) {
         year -= 1;
     }
 
     let url = format!("https://api.jolpi.ca/ergast/f1/{year}/{round}/results/?format=json");
+    info!("Fetching race results from URL: {}", url);
 
     let res = match state.http_client.get(&url).send().await {
         Ok(r) => r,
