@@ -1,3 +1,4 @@
+pub mod points;
 pub mod race;
 pub mod session;
 pub mod standings;
@@ -24,11 +25,13 @@ use crate::{
     models::{
         cache::CacheEntry,
         telemetry::{
-            DriverLapGraph, FastestLapSector, PacePoint, QualifyingRankings,
-            DriverMetrics,
+            DriverLapGraph, DriverMetrics, FastestLapSector, PacePoint, QualifyingRankings,
         },
     },
-    routes::{race::race_routes, session::session_routes, standings::standings_routes},
+    routes::{
+        points::points_routes, race::race_routes, session::session_routes,
+        standings::standings_routes,
+    },
     utils::{config::Config, rate_limiter::RateLimiter, state::AppState},
 };
 
@@ -144,6 +147,7 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         .nest("/race", race_routes(state.clone()))
         .nest("/session", session_routes(state.clone()))
         .nest("/standings", standings_routes(state.clone()))
+        .nest("/points", points_routes(state.clone()))
         .route(
             "/get_weather",
             get(get_weather).route_layer(from_fn(move |req, next| {
