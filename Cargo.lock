@@ -223,6 +223,7 @@ dependencies = [
  "http",
  "jsonwebtoken",
  "password-hash",
+ "rand",
  "reqwest",
  "serde",
  "serde_json",
