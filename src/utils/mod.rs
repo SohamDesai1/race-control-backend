@@ -5,3 +5,6 @@ pub mod jwt_encode;
 pub mod race_utils;
 pub mod rate_limiter;
 pub mod db_init;
+pub mod scoring;
+pub mod scoring_worker;
+pub mod scoring_test;

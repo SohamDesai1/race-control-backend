@@ -2,12 +2,13 @@ use jsonwebtoken::{EncodingKey, Header};
 
 use crate::models::jwt::{Claims, RefreshClaims};
 
-pub fn jwt_encode(email: String, secret: &str) -> String {
+pub fn jwt_encode(email: String, secret: &str, id: i64) -> String {
     let now = chrono::Utc::now().timestamp() as usize;
     let claims = Claims {
         sub: email,
         iat: now,
         exp: now + 15 * 60,
+        id: id,
     };
 
     jsonwebtoken::encode(
@@ -18,12 +19,13 @@ pub fn jwt_encode(email: String, secret: &str) -> String {
     .unwrap()
 }
 
-pub fn refresh_token_encode(email: String, secret: &str) -> String {
+pub fn refresh_token_encode(email: String, secret: &str, id: i64) -> String {
     let now = chrono::Utc::now().timestamp() as usize;
     let claims = RefreshClaims {
         sub: email,
         iat: now,
         exp: now + 15 * 24 * 60 * 60,
+        id: id,
     };
 
     jsonwebtoken::encode(
