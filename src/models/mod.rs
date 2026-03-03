@@ -1,8 +1,9 @@
-pub mod user;
-pub mod jwt;
-pub mod error;
-pub mod telemetry;
 pub mod cache;
+pub mod error;
+pub mod fantasy;
+pub mod jwt;
 pub mod news;
-pub mod session;
 pub mod race;
+pub mod session;
+pub mod telemetry;
+pub mod user;

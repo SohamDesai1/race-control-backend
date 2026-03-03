@@ -4,6 +4,7 @@ use sqlx::prelude::FromRow;
 
 #[derive(FromRow,Deserialize, Serialize, Clone, Debug)]
 pub struct User {
+    pub id: i64,
     pub email: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<DateTime<chrono::Utc>>,
