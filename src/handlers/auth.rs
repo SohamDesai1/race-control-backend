@@ -85,10 +85,12 @@ pub async fn register(
             let token = jwt_encode(
                 payload["email"].to_string(),
                 state.config.jwt_secret.as_ref(),
+                user.id,
             );
             let refresh_token = refresh_token_encode(
                 payload["email"].to_string(),
                 state.config.jwt_secret.as_ref(),
+                user.id,
             );
 
             let user_response = json!({
@@ -187,10 +189,12 @@ pub async fn login(
                 let token = jwt_encode(
                     payload["email"].to_string(),
                     state.config.jwt_secret.as_ref(),
+                    user.id,
                 );
                 let refresh_token = refresh_token_encode(
                     payload["email"].to_string(),
                     state.config.jwt_secret.as_ref(),
+                    user.id,
                 );
 
                 (
@@ -271,10 +275,15 @@ pub async fn refresh_token_handler(
         }
     };
 
-    let new_access_token = jwt_encode(claims.sub.clone(), state.config.jwt_secret.as_ref());
-    let new_refresh_token = refresh_token_encode(claims.sub, state.config.jwt_secret.as_ref());
+    let new_access_token = jwt_encode(
+        claims.sub.clone(),
+        state.config.jwt_secret.as_ref(),
+        claims.id,
+    );
+    let new_refresh_token =
+        refresh_token_encode(claims.sub, state.config.jwt_secret.as_ref(), claims.id);
 
-    tracing::info!("Token refreshed successfully for user",);
+    tracing::info!("Token refreshed successfully for user: {}", claims.id);
     (
         StatusCode::OK,
         Json(json!({

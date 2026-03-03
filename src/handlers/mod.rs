@@ -6,3 +6,5 @@ pub mod session;
 pub mod standings;
 pub mod weather;
 pub mod news;
+pub mod fantasy;
+pub mod admin;
