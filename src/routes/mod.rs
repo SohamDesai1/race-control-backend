@@ -2,6 +2,8 @@ pub mod race;
 pub mod session;
 pub mod standings;
 pub mod users;
+pub mod fantasy;
+pub mod admin;
 use axum::{middleware::from_fn, response::IntoResponse, routing::get, Json, Router};
 use dashmap::DashMap;
 use http::{header, Method, StatusCode};
@@ -28,7 +30,7 @@ use crate::{
             DriverMetrics,
         },
     },
-    routes::{race::race_routes, session::session_routes, standings::standings_routes},
+    routes::{race::race_routes, session::session_routes, standings::standings_routes, fantasy::fantasy_routes, admin::admin_routes},
     utils::{config::Config, rate_limiter::RateLimiter, state::AppState},
 };
 
@@ -122,6 +124,16 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
     // Initialize database (fetch and seed race data if empty)
     crate::utils::db_init::initialize_database(&state).await;
 
+    // Start scoring worker if enabled
+    let scoring_enabled = std::env::var("SCORING_WORKER_ENABLED")
+        .unwrap_or_else(|_| "false".to_string())
+        .to_lowercase();
+    
+    if scoring_enabled == "true" {
+        crate::utils::scoring_worker::start_scoring_worker(state.clone());
+        info!("Scoring worker started");
+    }
+
     let cors = CorsLayer::new()
         .allow_origin(Any) // Allow any origin
         .allow_methods([
@@ -144,6 +156,8 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
         .nest("/race", race_routes(state.clone()))
         .nest("/session", session_routes(state.clone()))
         .nest("/standings", standings_routes(state.clone()))
+        .nest("/fantasy", fantasy_routes(state.clone()))
+        .nest("/admin", admin_routes(state.clone()))
         .route(
             "/get_weather",
             get(get_weather).route_layer(from_fn(move |req, next| {
