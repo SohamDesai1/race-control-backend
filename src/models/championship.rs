@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
 #[derive(FromRow, Debug, Clone, Serialize, Deserialize)]
-pub struct _DriverChampionshipHistory {
+pub struct _DriverPointsHistory {
     pub id: i64,
     pub driver_number: String,
     pub session_key: i32,

@@ -136,7 +136,7 @@ pub async fn get_driver_championship(
             dch.points_current,
             dch.position,
             r."raceName" as race_name
-        FROM "DriverChampionshipHistory" dch
+        FROM "DriverPointsHistory" dch
         INNER JOIN "Races" r ON dch.race_id = r.id
         WHERE dch.season = $1 AND dch.driver_number = $2
         ORDER BY dch.round ASC, dch.position ASC
@@ -193,7 +193,7 @@ pub async fn get_constructor_championship(
             cch.points_current,
             cch.position,
             r."raceName" as race_name
-        FROM "ConstructorChampionshipHistory" cch
+        FROM "ConstructorPointsHistory" cch
         INNER JOIN "Races" r ON cch.race_id = r.id
         WHERE cch.season = $1 AND cch.constructor_id = $2
         ORDER BY cch.round ASC, cch.position ASC

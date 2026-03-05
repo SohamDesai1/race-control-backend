@@ -552,7 +552,7 @@ async fn seed_championship_data(
 
             sqlx::query(
                 r#"
-                INSERT INTO "DriverChampionshipHistory" 
+                INSERT INTO "DriverPointsHistory" 
                     (driver_number, session_key, meeting_key, season, round, race_id, points_start, points_current, position)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 ON CONFLICT (driver_number, session_key) DO UPDATE SET
@@ -599,7 +599,7 @@ async fn seed_championship_data(
 
             sqlx::query(
                 r#"
-                INSERT INTO "ConstructorChampionshipHistory" 
+                INSERT INTO "ConstructorPointsHistory" 
                     (constructor_id, constructor_name, session_key, meeting_key, season, round, race_id, points_start, points_current, position)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (constructor_id, session_key) DO UPDATE SET
