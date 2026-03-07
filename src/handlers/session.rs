@@ -18,6 +18,7 @@ use axum::{
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
+use sqlx::prelude::FromRow;
 
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::{collections::HashMap, sync::Arc};
@@ -512,6 +513,215 @@ async fn ergast_fallback(
     (StatusCode::OK, Json(json!(result_vec))).into_response()
 }
 
+async fn openf1_quali_fallback(
+    state: Arc<AppState>,
+    year: &str,
+    round: &str,
+) -> axum::response::Response {
+    #[derive(FromRow)]
+    struct SessionKeys {
+        session_key: Option<i32>,
+        meeting_key: Option<i32>,
+    }
+
+    let session_info = sqlx::query_as::<_, SessionKeys>(
+        r#"
+        SELECT s.session_key, s.meeting_key
+        FROM "Sessions" s
+        INNER JOIN "Races" r ON s."raceId" = r.id
+        WHERE r.season = $1 AND r.round = $2 AND s."sessionType" = 'Qualifying'
+        "#,
+    )
+    .bind(year)
+    .bind(round)
+    .fetch_optional(&state.db_pool)
+    .await;
+
+    let (session_key, _meeting_key) = match session_info {
+        Ok(Some(sk)) => (sk.session_key, sk.meeting_key),
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "No session key found for this race" })),
+            )
+                .into_response();
+        }
+    };
+
+    let session_key = match session_key {
+        Some(sk) => sk,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Session key not available" })),
+            )
+                .into_response();
+        }
+    };
+
+    let openf1_url = format!(
+        "https://api.openf1.org/v1/session_result?session_key={}",
+        session_key
+    );
+
+    let res = match state.http_client.get(&openf1_url).send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "OpenF1 fallback API failed" })),
+            )
+                .into_response();
+        }
+    };
+
+    let body = match res.text().await {
+        Ok(b) => b,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "Failed to read OpenF1 fallback response" })),
+            )
+                .into_response();
+        }
+    };
+
+    let res_body: Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "Invalid OpenF1 fallback JSON" })),
+            )
+                .into_response();
+        }
+    };
+
+    let mut q1_rankings = Vec::new();
+    let mut q2_rankings = Vec::new();
+    let mut q3_rankings = Vec::new();
+
+    if let Some(results_array) = res_body.as_array() {
+        for result in results_array {
+            let driver_number = result["driver_number"].as_u64().unwrap_or(0) as u32;
+            let duration_array = result["duration"].as_array();
+            let _gap_array = result["gap_to_leader"].as_array();
+
+            if let Some(durations) = duration_array {
+                if let Some(q1_duration) = durations.get(0) {
+                    if let Some(q1_time) = q1_duration.as_f64() {
+                        q1_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: Some(driver_number.to_string()),
+                            time: format!("{:.3}", q1_time),
+                            time_seconds: Some(q1_time),
+                            driver_code: None,
+                            driver_name: None,
+                            constructor: None,
+                        });
+                    } else {
+                        q1_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: Some(driver_number.to_string()),
+                            time: "".to_string(),
+                            time_seconds: None,
+                            driver_code: None,
+                            driver_name: None,
+                            constructor: None,
+                        });
+                    }
+                }
+
+                if let Some(q2_duration) = durations.get(1) {
+                    if let Some(q2_time) = q2_duration.as_f64() {
+                        q2_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: Some(driver_number.to_string()),
+                            time: format!("{:.3}", q2_time),
+                            time_seconds: Some(q2_time),
+                            driver_code: None,
+                            driver_name: None,
+                            constructor: None,
+                        });
+                    } else {
+                        q2_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: Some(driver_number.to_string()),
+                            time: "".to_string(),
+                            time_seconds: None,
+                            driver_code: None,
+                            driver_name: None,
+                            constructor: None,
+                        });
+                    }
+                }
+
+                if let Some(q3_duration) = durations.get(2) {
+                    if let Some(q3_time) = q3_duration.as_f64() {
+                        q3_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: Some(driver_number.to_string()),
+                            time: format!("{:.3}", q3_time),
+                            time_seconds: Some(q3_time),
+                            driver_code: None,
+                            driver_name: None,
+                            constructor: None,
+                        });
+                    } else {
+                        q3_rankings.push(QualifyingRanking {
+                            position: 0,
+                            driver_number: Some(driver_number.to_string()),
+                            time: "".to_string(),
+                            time_seconds: None,
+                            driver_code: None,
+                            driver_name: None,
+                            constructor: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    q1_rankings.sort_by(|a, b| match (a.time_seconds, b.time_seconds) {
+        (Some(time_a), Some(time_b)) => time_a.partial_cmp(&time_b).unwrap_or(Equal),
+        (Some(_), None) => Less,
+        (None, Some(_)) => Greater,
+        (None, None) => Equal,
+    });
+    for (i, ranking) in q1_rankings.iter_mut().enumerate() {
+        ranking.position = (i + 1) as u32;
+    }
+
+    q2_rankings.sort_by(|a, b| match (a.time_seconds, b.time_seconds) {
+        (Some(time_a), Some(time_b)) => time_a.partial_cmp(&time_b).unwrap_or(Equal),
+        (Some(_), None) => Less,
+        (None, Some(_)) => Greater,
+        (None, None) => Equal,
+    });
+    for (i, ranking) in q2_rankings.iter_mut().enumerate() {
+        ranking.position = (i + 1) as u32;
+    }
+
+    q3_rankings.sort_by(|a, b| match (a.time_seconds, b.time_seconds) {
+        (Some(time_a), Some(time_b)) => time_a.partial_cmp(&time_b).unwrap_or(Equal),
+        (Some(_), None) => Less,
+        (None, Some(_)) => Greater,
+        (None, None) => Equal,
+    });
+    for (i, ranking) in q3_rankings.iter_mut().enumerate() {
+        ranking.position = (i + 1) as u32;
+    }
+
+    let rankings = QualifyingRankings {
+        q1: q1_rankings,
+        q2: q2_rankings,
+        q3: q3_rankings,
+    };
+
+    (StatusCode::OK, Json(rankings)).into_response()
+}
+
 async fn _seed_championship_data(
     state: Arc<AppState>,
     session_key: i32,
@@ -685,13 +895,15 @@ pub async fn get_quali_session_data(
                 .and_then(|races| races.first())
                 .and_then(|race| race["QualifyingResults"].as_array())
             {
-                Some(results) => results,
-                None => {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(json!({ "error": "No qualifying results found" })),
+                Some(results) if !results.is_empty() => results,
+                _ => {
+                    info!("Jolpica returned empty qualifying results, falling back to OpenF1");
+                    return openf1_quali_fallback(
+                        state,
+                        &year,
+                        &round,
                     )
-                        .into_response();
+                    .await;
                 }
             };
 
