@@ -1,11 +1,11 @@
 use crate::{
     models::{
         cache::CacheEntry,
-        session::Session,
+        session::{Session, SessionWithRace},
         telemetry::{
-            CarDataPoint, DriverLapGraph, FastestLapSector, Lap, LapPosition, LapRecord,
-            LocationPoint, PacePoint, PaceQuery, PositionRecord, QualifyingRanking,
-            QualifyingRankings, DriverMetrics,
+            CarDataPoint, DriverLapGraph, DriverMetrics, FastestLapSector, Lap, LapPosition,
+            LapRecord, LocationPoint, PacePoint, PaceQuery, PositionRecord, QualifyingRanking,
+            QualifyingRankings,
         },
     },
     utils::{race_utils::map_session_name, rate_limiter::RateLimiter, state::AppState},
@@ -18,7 +18,6 @@ use axum::{
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use http::StatusCode;
 use serde_json::{from_str, json, Value};
-use sqlx::prelude::FromRow;
 
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::{collections::HashMap, sync::Arc};
@@ -272,16 +271,6 @@ pub async fn get_session_data(
     State(state): State<Arc<AppState>>,
     Path(session_key): Path<String>,
 ) -> impl IntoResponse {
-    #[derive(FromRow)]
-    struct SessionWithRace {
-        session_type: String,
-        session_key: Option<i32>,
-        meeting_key: Option<i32>,
-        season: String,
-        round: String,
-        race_id: i64,
-    }
-
     let session_info = sqlx::query_as::<_, SessionWithRace>(
         r#"
         SELECT 
@@ -392,17 +381,19 @@ pub async fn get_session_data(
 
     let session_key_i32 = session_key.parse::<i32>().unwrap_or(0);
     let session_type = session.session_type.clone();
-    
+
     if session_type.to_lowercase() == "race" {
         tokio::spawn(async move {
-            if let Err(e) = seed_championship_data(
+            if let Err(e) = _seed_championship_data(
                 state,
                 session_key_i32,
                 session.meeting_key.unwrap_or(0),
                 &session.season,
                 &session.round,
                 session.race_id,
-            ).await {
+            )
+            .await
+            {
                 tracing::error!("Failed to seed championship data: {:?}", e);
             }
         });
@@ -521,7 +512,7 @@ async fn ergast_fallback(
     (StatusCode::OK, Json(json!(result_vec))).into_response()
 }
 
-async fn seed_championship_data(
+async fn _seed_championship_data(
     state: Arc<AppState>,
     session_key: i32,
     meeting_key: i32,
@@ -535,7 +526,7 @@ async fn seed_championship_data(
     );
 
     let drivers_res = state.http_client.get(&drivers_url).send().await?;
-    
+
     if drivers_res.status().is_success() {
         let drivers_body = drivers_res.text().await?;
         let drivers: Vec<Value> = serde_json::from_str(&drivers_body).unwrap_or_default();
@@ -545,7 +536,7 @@ async fn seed_championship_data(
                 .as_i64()
                 .map(|n| n.to_string())
                 .unwrap_or_default();
-            
+
             let points_start = driver["points_start"].as_f64().unwrap_or(0.0);
             let points_current = driver["points_current"].as_f64().unwrap_or(0.0);
             let position = driver["position_current"].as_i64().map(|p| p as i32);
@@ -581,18 +572,15 @@ async fn seed_championship_data(
     );
 
     let teams_res = state.http_client.get(&teams_url).send().await?;
-    
+
     if teams_res.status().is_success() {
         let teams_body = teams_res.text().await?;
         let teams: Vec<Value> = serde_json::from_str(&teams_body).unwrap_or_default();
 
         for team in teams {
-            let constructor_id = team["team_name"]
-                .as_str()
-                .unwrap_or("unknown")
-                .to_string();
+            let constructor_id = team["team_name"].as_str().unwrap_or("unknown").to_string();
             let constructor_name = constructor_id.clone();
-            
+
             let points_start = team["points_start"].as_f64().unwrap_or(0.0);
             let points_current = team["points_current"].as_f64().unwrap_or(0.0);
             let position = team["position_current"].as_i64().map(|p| p as i32);
