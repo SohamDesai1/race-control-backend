@@ -37,6 +37,11 @@ pub async fn register(
                 payload["email"],
                 e
             );
+            tracing::error!(
+                "Password hashing error for email {}: {:?}",
+                payload["email"],
+                e
+            );
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": "Failed to hash password"})),
@@ -108,6 +113,9 @@ pub async fn register(
                     "data": {
                         "user": user_response,
                         "access_token": token,
+                        "refresh_token": refresh_token,
+                        "user": user_response,
+                        "access_token": token,
                         "refresh_token": refresh_token
                     }
                 })),
@@ -115,6 +123,11 @@ pub async fn register(
                 .into_response()
         }
         Err(e) => {
+            tracing::error!(
+                "Database error during registration for email {}: {:?}",
+                email,
+                e
+            );
             tracing::error!(
                 "Database error during registration for email {}: {:?}",
                 email,
