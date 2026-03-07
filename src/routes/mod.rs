@@ -1,9 +1,9 @@
+pub mod admin;
+pub mod fantasy;
 pub mod race;
 pub mod session;
 pub mod standings;
 pub mod users;
-pub mod fantasy;
-pub mod admin;
 use axum::{middleware::from_fn, response::IntoResponse, routing::get, Json, Router};
 use dashmap::DashMap;
 use http::{header, Method, StatusCode};
@@ -26,11 +26,13 @@ use crate::{
     models::{
         cache::CacheEntry,
         telemetry::{
-            DriverLapGraph, FastestLapSector, PacePoint, QualifyingRankings,
-            DriverMetrics,
+            DriverLapGraph, DriverMetrics, FastestLapSector, PacePoint, QualifyingRankings,
         },
     },
-    routes::{race::race_routes, session::session_routes, standings::standings_routes, fantasy::fantasy_routes, admin::admin_routes},
+    routes::{
+        admin::admin_routes, fantasy::fantasy_routes, race::race_routes, session::session_routes,
+        standings::standings_routes,
+    },
     utils::{config::Config, rate_limiter::RateLimiter, state::AppState},
 };
 
@@ -125,14 +127,14 @@ pub async fn make_app() -> Result<Router, Box<dyn Error>> {
     crate::utils::db_init::initialize_database(&state).await;
 
     // Start scoring worker if enabled
-    let scoring_enabled = std::env::var("SCORING_WORKER_ENABLED")
-        .unwrap_or_else(|_| "false".to_string())
-        .to_lowercase();
-    
-    if scoring_enabled == "true" {
-        crate::utils::scoring_worker::start_scoring_worker(state.clone());
-        info!("Scoring worker started");
-    }
+    // let scoring_enabled = std::env::var("SCORING_WORKER_ENABLED")
+    //     .unwrap_or_else(|_| "false".to_string())
+    //     .to_lowercase();
+
+    // if scoring_enabled == "true" {
+    crate::utils::scoring_worker::start_scoring_worker(state.clone());
+    info!("Scoring worker started");
+    // }
 
     let cors = CorsLayer::new()
         .allow_origin(Any) // Allow any origin
