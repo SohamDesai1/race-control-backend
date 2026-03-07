@@ -116,6 +116,7 @@ pub async fn constructor_standings(
 #[derive(FromRow)]
 struct DriverChampionshipWithRace {
     driver_number: String,
+    #[allow(dead_code)]
     season: String,
     round: String,
     points_current: f64,
@@ -176,6 +177,7 @@ pub async fn get_driver_championship_points(
 struct ConstructorChampionshipWithRace {
     constructor_id: String,
     constructor_name: String,
+    #[allow(dead_code)]
     season: String,
     round: String,
     points_current: f64,
