@@ -43,9 +43,9 @@ fn is_race_weekend() -> bool {
     }
 }
 
-async fn check_for_active_race(state: &Arc<AppState>) -> Result<Option<(i32, i32)>, String> {
+async fn check_for_active_race(state: &Arc<AppState>) -> Result<Option<(i64, i64)>, String> {
     // Query our database for upcoming/ongoing races this weekend
-    let races = sqlx::query_as::<_, (i32, Option<i32>, String)>(
+    let races = sqlx::query_as::<_, (i64, Option<i64>, String)>(
         r#"
         SELECT r.id, s."session_key"::integer, r.date::text
         FROM "Races" r
@@ -125,7 +125,7 @@ async fn check_and_calculate_scores(state: &Arc<AppState>) -> Result<bool, Strin
     let (gp_id, session_key) = active_race.unwrap();
 
     // Check if already scored
-    let already_scored = sqlx::query_scalar::<_, (i32,)>(
+    let already_scored = sqlx::query_scalar::<_, (i64,)>(
         r#"
         SELECT COUNT(*) FROM "fantasy_teams" 
         WHERE gp_id = $1 AND is_locked = true AND total_points > 0
@@ -195,14 +195,14 @@ async fn check_and_calculate_scores(state: &Arc<AppState>) -> Result<bool, Strin
                     let position = racing
                         .get("position")
                         .and_then(|v| v.as_i64())
-                        .map(|v| v as i32)
+                        .map(|v| v as i64)
                         .unwrap_or(0);
 
                     Some(scoring::RaceResult {
                         driver_id: racing
                             .get("driver_number")
                             .and_then(|v| v.as_i64())
-                            .map(|v| v as i32)
+                            .map(|v| v as i64)
                             .unwrap_or(0),
                         position,
                         fastest_lap: racing
@@ -219,13 +219,13 @@ async fn check_and_calculate_scores(state: &Arc<AppState>) -> Result<bool, Strin
         })
         .unwrap_or_default();
 
-    let constructors: Vec<(i32, String)> = sqlx::query_as(
+    let constructors: Vec<(i64, String)> = sqlx::query_as(
         r#"SELECT id, name FROM "fantasy_constructors" WHERE year = 2026"#
     )
     .fetch_all(&state.db_pool)
     .await
     .ok()
-    .map(|rows: Vec<(i32, String)>| rows)
+    .map(|rows: Vec<(i64, String)>| rows)
     .unwrap_or_default();
 
     let mut constructor_results: Vec<scoring::ConstructorResult> = vec![];
@@ -245,7 +245,7 @@ async fn check_and_calculate_scores(state: &Arc<AppState>) -> Result<bool, Strin
                     
                     let position = team_data.get("position_current")
                         .and_then(|v| v.as_i64())
-                        .map(|v| v as i32)
+                        .map(|v| v as i64)
                         .unwrap_or(0);
 
                     for (constructor_id, fantasy_name) in &constructors {
@@ -284,7 +284,7 @@ async fn check_and_calculate_scores(state: &Arc<AppState>) -> Result<bool, Strin
 
 async fn lock_teams_for_qualifying(state: &Arc<AppState>) -> Result<(), String> {
     // Find GPs where qualifying has started but race hasn't finished
-    let races = sqlx::query_as::<_, (i32, Option<i32>, Option<i32>)>(
+    let races = sqlx::query_as::<_, (i64, Option<i64>, Option<i64>)>(
         r#"
         SELECT r.id, 
                q.session_key::integer as quali_key,
@@ -350,7 +350,7 @@ async fn lock_teams_for_qualifying(state: &Arc<AppState>) -> Result<(), String> 
         // Teams should lock when qualifying begins, unlock after race
         if quali_status.is_some() && quali_status != Some("Completed") {
             // Check if teams already locked
-            let already_locked = sqlx::query_scalar::<_, (i32,)>(
+            let already_locked = sqlx::query_scalar::<_, (i64,)>(
                 r#"SELECT COUNT(*) FROM "fantasy_teams" WHERE gp_id = $1 AND is_locked = true"#
             )
             .bind(gp_id)

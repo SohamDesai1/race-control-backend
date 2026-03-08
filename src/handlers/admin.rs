@@ -14,7 +14,7 @@ use serde_json::json;
 use tracing::info;
 
 pub async fn calculate_gp_scores(
-    Path(gp_id): Path<i32>,
+    Path(gp_id): Path<i64>,
     State(state): State<Arc<AppState>>,
     Extension(claims): Extension<Claims>,
 ) -> impl IntoResponse {
@@ -27,7 +27,7 @@ pub async fn calculate_gp_scores(
     }
     tracing::info!("Manually triggering score calculation for GP {}", gp_id);
 
-    let session = sqlx::query_as::<_, (Option<i32>, Option<String>)>(
+    let session = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
         r#"
         SELECT "session_key"::integer, "sessionType" 
         FROM "Sessions" 
@@ -138,13 +138,13 @@ pub async fn calculate_gp_scores(
                     let position = racing
                         .get("position")
                         .and_then(|v| v.as_i64())
-                        .map(|v| v as i32)
+                        .map(|v| v as i64)
                         .unwrap_or(0);
 
                     let driver_id = racing
                         .get("driver_number")
                         .and_then(|v| v.as_i64())
-                        .map(|v| v as i32)
+                        .map(|v| v as i64)
                         .unwrap_or(0);
 
                     // Validate position and driver_id
@@ -168,7 +168,7 @@ pub async fn calculate_gp_scores(
 
     tracing::info!("Race results from OpenF1: {:?}", race_results);
 
-    let driver_mapping: std::collections::HashMap<i32, i32> = sqlx::query_as::<_, (i32, i32)>(
+    let driver_mapping: std::collections::HashMap<i64, i64> = sqlx::query_as::<_, (i64, i64)>(
         r#"SELECT id, driver_id FROM "fantasy_drivers" WHERE year = 2026"#,
     )
     .fetch_all(&state.db_pool)
@@ -182,7 +182,7 @@ pub async fn calculate_gp_scores(
         .into_iter()
         .map(|r| {
             info!("Original race driver_id: {:?}", r.driver_id);
-            let actual_driver_id: i32 = driver_mapping
+            let actual_driver_id: i64 = driver_mapping
                 .get(&r.driver_id)
                 .copied()
                 .unwrap_or(r.driver_id);
@@ -195,12 +195,12 @@ pub async fn calculate_gp_scores(
 
     tracing::info!("Race results after mapping: {:?}", race_results);
 
-    let constructors: Vec<(i32, String)> =
+    let constructors: Vec<(i64, String)> =
         sqlx::query_as(r#"SELECT id, name FROM "fantasy_constructors" WHERE year = 2026"#)
             .fetch_all(&state.db_pool)
             .await
             .ok()
-            .map(|rows: Vec<(i32, String)>| rows)
+            .map(|rows: Vec<(i64, String)>| rows)
             .unwrap_or_default();
 
     let mut constructor_results: Vec<scoring::ConstructorResult> = vec![];
@@ -222,7 +222,7 @@ pub async fn calculate_gp_scores(
                     let position = team_data
                         .get("position_current")
                         .and_then(|v| v.as_i64())
-                        .map(|v| v as i32)
+                        .map(|v| v as i64)
                         .unwrap_or(0);
 
                     // Normalize team names for better matching
@@ -285,7 +285,7 @@ pub async fn calculate_gp_scores(
     .flatten();
 
     let year = race_info
-        .map(|(s,)| s.parse::<i32>().unwrap_or(2026))
+        .map(|(s,)| s.parse::<i64>().unwrap_or(2026))
         .unwrap_or(2026);
 
     if let Err(e) = scoring::update_prices_after_gp(
@@ -318,7 +318,7 @@ pub async fn get_scoring_status(
         )
             .into_response();
     }
-    let active_gps = sqlx::query_as::<_, (i32, String, Option<String>)>(
+    let active_gps = sqlx::query_as::<_, (i64, String, Option<String>)>(
         r#"
         SELECT r.id, r."raceName", r.season
         FROM "Races" r
@@ -353,7 +353,7 @@ pub async fn get_scoring_status(
 }
 
 pub async fn lock_teams(
-    Path(gp_id): Path<i32>,
+    Path(gp_id): Path<i64>,
     State(state): State<Arc<AppState>>,
     Extension(claims): Extension<Claims>,
 ) -> impl IntoResponse {
@@ -367,7 +367,7 @@ pub async fn lock_teams(
     tracing::info!("Manually triggering team lock for GP {}", gp_id);
 
     // Get qualifying session key
-    let session = sqlx::query_as::<_, (Option<i32>,)>(
+    let session = sqlx::query_as::<_, (Option<i64>,)>(
         r#"SELECT "session_key"::integer FROM "Sessions" WHERE "raceId" = $1 AND "sessionType" = 'Qualifying'"#,
     )
     .bind(gp_id)

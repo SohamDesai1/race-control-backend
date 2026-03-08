@@ -3,36 +3,36 @@ use std::sync::Arc;
 use crate::utils::state::AppState;
 use serde::{Deserialize, Serialize};
 
-const DRIVER_POINTS: [i32; 10] = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1];
-const CONSTRUCTOR_POINTS: [i32; 10] = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1];
-const FASTEST_LAP_BONUS: i32 = 5;
+const DRIVER_POINTS: [i64; 10] = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1];
+const CONSTRUCTOR_POINTS: [i64; 10] = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1];
+const FASTEST_LAP_BONUS: i64 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RaceResult {
-    pub driver_id: i32,
-    pub position: i32,
+    pub driver_id: i64,
+    pub position: i64,
     pub fastest_lap: bool,
     pub dnf: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstructorResult {
-    pub constructor_id: i32,
-    pub position: i32,
+    pub constructor_id: i64,
+    pub position: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamScore {
-    pub team_id: i32,
-    pub driver_1_points: i32,
-    pub driver_2_points: i32,
-    pub constructor_points: i32,
-    pub fastest_lap_bonus: i32,
-    pub booster_points: i32,
-    pub total_points: i32,
+    pub team_id: i64,
+    pub driver_1_points: i64,
+    pub driver_2_points: i64,
+    pub constructor_points: i64,
+    pub fastest_lap_bonus: i64,
+    pub booster_points: i64,
+    pub total_points: i64,
 }
 
-fn get_driver_finishing_points(position: i32) -> i32 {
+fn get_driver_finishing_points(position: i64) -> i64 {
     if position < 1 {
         return -10;
     }
@@ -43,7 +43,7 @@ fn get_driver_finishing_points(position: i32) -> i32 {
         -(position - 10)
     }
 }
-fn get_constructor_finishing_points(position: i32) -> i32 {
+fn get_constructor_finishing_points(position: i64) -> i64 {
     if position < 1 {
         return -10;
     }
@@ -56,12 +56,12 @@ fn get_constructor_finishing_points(position: i32) -> i32 {
 }
 
 pub fn calculate_team_score(
-    driver_1_position: i32,
-    driver_2_position: i32,
-    constructor_position: i32,
+    driver_1_position: i64,
+    driver_2_position: i64,
+    constructor_position: i64,
     driver_1_fastest_lap: bool,
     driver_2_fastest_lap: bool,
-    booster_driver_id: Option<i32>,
+    booster_driver_id: Option<i64>,
     is_driver_1: bool,
     driver_1_is_dnf: bool,
     driver_2_is_dnf: bool,
@@ -112,24 +112,24 @@ pub fn calculate_team_score(
     }
 }
 
-fn driver_1_dnf(position: i32, dnf: bool) -> bool {
+fn driver_1_dnf(position: i64, dnf: bool) -> bool {
     dnf || position < 1
 }
 
-fn driver_2_dnf(position: i32, dnf: bool) -> bool {
+fn driver_2_dnf(position: i64, dnf: bool) -> bool {
     dnf || position < 1
 }
 
 pub async fn calculate_gp_scores(
     state: &Arc<AppState>,
-    gp_id: i32,
+    gp_id: i64,
     race_results: Vec<RaceResult>,
     constructor_results: Vec<ConstructorResult>,
-    fastest_lap_driver_id: Option<i32>,
+    fastest_lap_driver_id: Option<i64>,
 ) -> Result<(), String> {
     tracing::info!("Calculating scores for GP {}", gp_id);
 
-    let teams = sqlx::query_as::<_, (i32, i32, i32, i32, i32, Option<i32>)>(
+    let teams = sqlx::query_as::<_, (i64, i64, i64, i64, i64, Option<i64>)>(
         r#"
         SELECT id, driver_1_id, driver_2_id, constructor_id, gp_id, booster_driver_id 
         FROM "fantasy_teams" 
@@ -237,7 +237,7 @@ pub async fn calculate_gp_scores(
     Ok(())
 }
 
-pub fn calculate_driver_price_change(position: i32) -> i32 {
+pub fn calculate_driver_price_change(position: i64) -> i64 {
     let change = match position {
         1 => 5_000_000,
         2 => 3_000_000,
@@ -252,10 +252,10 @@ pub fn calculate_driver_price_change(position: i32) -> i32 {
 }
 
 pub fn calculate_constructor_price_change(
-    combined_points: i32,
+    combined_points: i64,
     both_in_points: bool,
     is_dominant: bool,
-) -> i32 {
+) -> i64 {
     let mut change = match combined_points {
         50 => 8_000_000,
         43 | 37 => 6_000_000,
@@ -280,15 +280,15 @@ pub fn calculate_constructor_price_change(
 
 pub async fn update_prices_after_gp(
     state: &Arc<AppState>,
-    gp_id: i32,
-    year: i32,
+    gp_id: i64,
+    year: i64,
     race_results: &[RaceResult],
     constructor_results: &[ConstructorResult],
 ) -> Result<(), String> {
     tracing::info!("Updating prices after GP {}", gp_id);
 
-    let mut driver_price_changes: Vec<(i32, i32)> = Vec::new();
-    let mut constructor_price_changes: Vec<(i32, i32)> = Vec::new();
+    let mut driver_price_changes: Vec<(i64, i64)> = Vec::new();
+    let mut constructor_price_changes: Vec<(i64, i64)> = Vec::new();
 
     for result in race_results {
         if result.dnf || result.position <= 0 {
@@ -299,7 +299,7 @@ pub async fn update_prices_after_gp(
         driver_price_changes.push((result.driver_id, change));
     }
 
-    let driver_constructor_map: Vec<(i32, i32)> = sqlx::query_as(
+    let driver_constructor_map: Vec<(i64, i64)> = sqlx::query_as(
         r#"SELECT id, team_id FROM "fantasy_drivers" WHERE year = $1 AND team_id IS NOT NULL"#,
     )
     .bind(year)
@@ -307,11 +307,11 @@ pub async fn update_prices_after_gp(
     .await
     .map_err(|e| format!("Failed to fetch driver-constructor mapping: {}", e))?;
 
-    let driver_to_constructor: std::collections::HashMap<i32, i32> = driver_constructor_map
+    let driver_to_constructor: std::collections::HashMap<i64, i64> = driver_constructor_map
         .into_iter()
         .collect();
 
-    let constructors: Vec<i32> = sqlx::query_as(
+    let constructors: Vec<i64> = sqlx::query_as(
         r#"SELECT id FROM "fantasy_constructors" WHERE year = $1"#,
     )
     .bind(year)
@@ -322,7 +322,7 @@ pub async fn update_prices_after_gp(
     .map(|(id,)| id)
     .collect();
 
-    let mut constructor_driver_counts: std::collections::HashMap<i32, Vec<i32>> = std::collections::HashMap::new();
+    let mut constructor_driver_counts: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
     for result in race_results {
         if result.dnf || result.position <= 0 {
             continue;
