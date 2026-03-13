@@ -5,7 +5,6 @@ use axum::Json;
 use serde_json::json;
 use serde_json::Value;
 
-
 #[derive(Debug)]
 pub struct Error {
     pub code: StatusCode,

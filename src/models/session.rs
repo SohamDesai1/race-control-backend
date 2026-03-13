@@ -16,3 +16,12 @@ pub struct Session {
     pub session_key: Option<i32>,
     pub meeting_key: Option<i32>,
 }
+#[derive(FromRow)]
+pub struct SessionWithRace {
+    pub session_type: String,
+    pub session_key: Option<i32>,
+    pub meeting_key: Option<i32>,
+    pub season: String,
+    pub round: String,
+    pub race_id: i64,
+}

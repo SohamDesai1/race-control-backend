@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc, Duration};
+use chrono::{DateTime, Duration, Utc};
 
 #[derive(Clone, Debug)]
 pub struct CacheEntry<T> {

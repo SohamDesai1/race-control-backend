@@ -1,11 +1,11 @@
 use crate::{
     models::{
         cache::CacheEntry,
-        session::Session,
+        session::{Session, SessionWithRace},
         telemetry::{
-            CarDataPoint, DriverLapGraph, FastestLapSector, Lap, LapPosition, LapRecord,
-            LocationPoint, PacePoint, PaceQuery, PositionRecord, QualifyingRanking,
-            QualifyingRankings, DriverMetrics,
+            CarDataPoint, DriverLapGraph, DriverMetrics, FastestLapSector, Lap, LapPosition,
+            LapRecord, LocationPoint, PacePoint, PaceQuery, PositionRecord, QualifyingRanking,
+            QualifyingRankings,
         },
     },
     utils::{race_utils::map_session_name, rate_limiter::RateLimiter, state::AppState},
@@ -272,15 +272,6 @@ pub async fn get_session_data(
     State(state): State<Arc<AppState>>,
     Path(session_key): Path<String>,
 ) -> impl IntoResponse {
-    #[derive(FromRow)]
-    struct SessionWithRace {
-        session_type: String,
-        session_key: Option<i32>,
-        meeting_key: Option<i32>,
-        season: String,
-        round: String,
-    }
-
     let session_info = sqlx::query_as::<_, SessionWithRace>(
         r#"
         SELECT 
@@ -288,7 +279,8 @@ pub async fn get_session_data(
             s.session_key,
             s.meeting_key,
             r.season,
-            r.round
+            r.round,
+            r.id as race_id
         FROM "Sessions" s
         INNER JOIN "Races" r ON s."raceId" = r.id
         WHERE s.session_key = $1
@@ -387,6 +379,26 @@ pub async fn get_session_data(
     } else {
         parsed
     };
+
+    let session_key_i32 = session_key.parse::<i32>().unwrap_or(0);
+    let session_type = session.session_type.clone();
+
+    if session_type.to_lowercase() == "race" {
+        tokio::spawn(async move {
+            if let Err(e) = _seed_championship_data(
+                state,
+                session_key_i32,
+                session.meeting_key.unwrap_or(0),
+                &session.season,
+                &session.round,
+                session.race_id,
+            )
+            .await
+            {
+                tracing::error!("Failed to seed championship data: {:?}", e);
+            }
+        });
+    }
 
     (StatusCode::OK, Json(enriched)).into_response()
 }
@@ -708,6 +720,121 @@ async fn openf1_quali_fallback(
     };
 
     (StatusCode::OK, Json(rankings)).into_response()
+}
+
+async fn _seed_championship_data(
+    state: Arc<AppState>,
+    session_key: i32,
+    meeting_key: i32,
+    season: &str,
+    round: &str,
+    race_id: i64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    info!(
+        "Seeding driver points data for session key: {}",
+        session_key
+    );
+    let drivers_url = format!(
+        "https://api.openf1.org/v1/championship_drivers?session_key={}",
+        session_key
+    );
+
+    let drivers_res = state.http_client.get(&drivers_url).send().await?;
+
+    if drivers_res.status().is_success() {
+        let drivers_body = drivers_res.text().await?;
+        let drivers: Vec<Value> = serde_json::from_str(&drivers_body).unwrap_or_default();
+
+        for driver in drivers {
+            let driver_number = driver["driver_number"]
+                .as_i64()
+                .map(|n| n.to_string())
+                .unwrap_or_default();
+
+            let points_start = driver["points_start"].as_f64().unwrap_or(0.0);
+            let points_current = driver["points_current"].as_f64().unwrap_or(0.0);
+            let position = driver["position_current"].as_i64().map(|p| p as i32);
+
+            sqlx::query(
+                r#"
+                INSERT INTO "DriverPointsHistory" 
+                    (driver_number, session_key, meeting_key, season, round, race_id, points_start, points_current, position)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                ON CONFLICT (driver_number, session_key) DO UPDATE SET
+                    points_start = EXCLUDED.points_start,
+                    points_current = EXCLUDED.points_current,
+                    position = EXCLUDED.position
+                "#,
+            )
+            .bind(&driver_number)
+            .bind(session_key)
+            .bind(meeting_key)
+            .bind(season)
+            .bind(round)
+            .bind(race_id)
+            .bind(points_start)
+            .bind(points_current)
+            .bind(position)
+            .execute(&state.db_pool)
+            .await?;
+        }
+    }
+
+    info!(
+        "Seeding constructor points data for session key: {}",
+        session_key
+    );
+    let teams_url = format!(
+        "https://api.openf1.org/v1/championship_teams?session_key={}",
+        session_key
+    );
+
+    let teams_res = state.http_client.get(&teams_url).send().await?;
+
+    if teams_res.status().is_success() {
+        let teams_body = teams_res.text().await?;
+        let teams: Vec<Value> = serde_json::from_str(&teams_body).unwrap_or_default();
+
+        for team in teams {
+            let constructor_id = team["team_name"].as_str().unwrap_or("unknown").to_string();
+            let constructor_name = constructor_id.clone();
+
+            let points_start = team["points_start"].as_f64().unwrap_or(0.0);
+            let points_current = team["points_current"].as_f64().unwrap_or(0.0);
+            let position = team["position_current"].as_i64().map(|p| p as i32);
+
+            sqlx::query(
+                r#"
+                INSERT INTO "ConstructorPointsHistory" 
+                    (constructor_id, constructor_name, session_key, meeting_key, season, round, race_id, points_start, points_current, position)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                ON CONFLICT (constructor_id, session_key) DO UPDATE SET
+                    points_start = EXCLUDED.points_start,
+                    points_current = EXCLUDED.points_current,
+                    position = EXCLUDED.position
+                "#,
+            )
+            .bind(&constructor_id)
+            .bind(&constructor_name)
+            .bind(session_key)
+            .bind(meeting_key)
+            .bind(season)
+            .bind(round)
+            .bind(race_id)
+            .bind(points_start)
+            .bind(points_current)
+            .bind(position)
+            .execute(&state.db_pool)
+            .await?;
+        }
+    }
+
+    info!(
+        "Seeded championship data for session {} (season {}, round {})",
+        session_key, season, round
+    );
+
+    Ok(())
 }
 
 fn _parse_lap_time(time_str: &str) -> Option<f64> {

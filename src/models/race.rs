@@ -32,12 +32,12 @@ pub struct _Circuit {
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct RaceWithCircuit {
-    pub id: i64,                                // BIGINT
+    pub id: i64, // BIGINT
     pub created_at: Option<DateTime<Utc>>,
     pub season: String,
     pub round: String,
-    pub date: Option<NaiveDate>,                // DATE
-    pub time: Option<NaiveTime>,                // TIME
+    pub date: Option<NaiveDate>, // DATE
+    pub time: Option<NaiveTime>, // TIME
     pub race_name: String,
     pub circuit_id: String,
     pub circuit_name: String,
