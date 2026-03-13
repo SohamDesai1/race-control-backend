@@ -906,7 +906,12 @@ pub async fn get_quali_session_data(
                 Some(results) if !results.is_empty() => results,
                 _ => {
                     info!("Jolpica returned empty qualifying results, falling back to OpenF1");
-                    return openf1_quali_fallback(state, &year, &round).await;
+                    return openf1_quali_fallback(
+                        state,
+                        &year,
+                        &round,
+                    )
+                    .await;
                 }
             };
 
