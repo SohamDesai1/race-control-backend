@@ -730,6 +730,10 @@ async fn _seed_championship_data(
     round: &str,
     race_id: i64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    info!(
+        "Seeding driver points data for session key: {}",
+        session_key
+    );
     let drivers_url = format!(
         "https://api.openf1.org/v1/championship_drivers?session_key={}",
         session_key
@@ -776,6 +780,10 @@ async fn _seed_championship_data(
         }
     }
 
+    info!(
+        "Seeding constructor points data for session key: {}",
+        session_key
+    );
     let teams_url = format!(
         "https://api.openf1.org/v1/championship_teams?session_key={}",
         session_key
@@ -898,12 +906,7 @@ pub async fn get_quali_session_data(
                 Some(results) if !results.is_empty() => results,
                 _ => {
                     info!("Jolpica returned empty qualifying results, falling back to OpenF1");
-                    return openf1_quali_fallback(
-                        state,
-                        &year,
-                        &round,
-                    )
-                    .await;
+                    return openf1_quali_fallback(state, &year, &round).await;
                 }
             };
 
